@@ -138,22 +138,46 @@ commodities = {
     "Natural Gas": "NG=F"
 }
 
-cols = st.columns(3)
+cols = st.columns(len(commodities))
 
 for i, (label, symbol) in enumerate(commodities.items()):
     with cols[i]:
         st.subheader(label)
-        df = get_commodity_data_yf(symbol)
-        if df is not None and len(df) >= 2:
-            latest_price = df['Close'].iloc[-1]
-            prev_price = df['Close'].iloc[-2]
-            change = latest_price - prev_price
-            pct_change = (change / prev_price) * 100
-            st.metric(
-                label="Price",
-                value=f"${latest_price:.2f}",
-                delta=f"{change:+.2f} ({pct_change:+.2f}%)"
-            )
-        else:
-            st.write("Data unavailable")
+        try:
+            df = yf.download(symbol, period="3mo", interval="1d").copy()
+            df = df[['Open', 'High', 'Low', 'Close', 'Volume']].dropna()
+
+            # Technical indicators
+            df['MA20'] = df['Close'].rolling(window=20).mean()
+            df['MA50'] = df['Close'].rolling(window=50).mean()
+
+            rolling_std = df['Close'].rolling(window=20).std()  # Calculate std separately
+
+            df['UpperBand'] = df['MA20'] + 2 * rolling_std
+            df['LowerBand'] = df['MA20'] - 2 * rolling_std
+
+            delta = df['Close'].diff()
+            gain = delta.clip(lower=0)
+            loss = -delta.clip(upper=0)
+            avg_gain = gain.rolling(window=14).mean()
+            avg_loss = loss.rolling(window=14).mean()
+            rs = avg_gain / avg_loss
+            df['RSI'] = 100 - (100 / (1 + rs))
+            df = df.dropna()
+
+            if len(df) >= 2:
+                latest_price = df['Close'].iloc[-1]
+                prev_price = df['Close'].iloc[-2]
+                change = latest_price - prev_price
+                pct_change = (change / prev_price) * 100
+
+                st.metric(
+                    label="Price",
+                    value=f"${latest_price:.2f}",
+                    delta=f"{change:+.2f} ({pct_change:+.2f}%)"
+                )
+            else:
+                st.write("Not enough data.")
+        except Exception as e:
+            st.error(f"Failed to fetch {symbol} data: {e}")
 
