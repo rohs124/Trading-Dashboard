@@ -131,18 +131,29 @@ if ticker1 and ticker2:
 
 # === Commodities Section ===
 st.header("🛢️ Commodities Dashboard")
+
 commodities = {
     "Gold": "GC=F",
     "Crude Oil (WTI)": "CL=F",
     "Natural Gas": "NG=F"
 }
+
 cols = st.columns(3)
+
 for i, (label, symbol) in enumerate(commodities.items()):
     with cols[i]:
         st.subheader(label)
         df = get_commodity_data_yf(symbol)
-        if df is not None:
-            price = df['Close'].iloc[-1]
-            st.metric("Latest Price", f"${price:.2f}")
-            plot_chart(df, f"{label} - Last 3 Months", chart_type, show_ma, show_bollinger, show_rsi, show_volume, key_prefix=label.lower().replace(" ", "_"))
+        if df is not None and len(df) >= 2:
+            latest_price = df['Close'].iloc[-1]
+            prev_price = df['Close'].iloc[-2]
+            change = latest_price - prev_price
+            pct_change = (change / prev_price) * 100
+            st.metric(
+                label="Price",
+                value=f"${latest_price:.2f}",
+                delta=f"{change:+.2f} ({pct_change:+.2f}%)"
+            )
+        else:
+            st.write("Data unavailable")
 
