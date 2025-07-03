@@ -1,3 +1,9 @@
+streamlit
+pandas
+yfinance
+alpha_vantage
+numpy
+plotly
 aiohappyeyeballs==2.6.1
 aiohttp==3.12.12
 aiosignal==1.3.2
