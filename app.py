@@ -4,15 +4,13 @@ import requests
 import plotly.graph_objs as go
 from alpha_vantage.timeseries import TimeSeries
 
-# --- Page config ---
-st.set_page_config(page_title="Canadian Market & Forex Dashboard", layout="wide")
-st.title("📈 Canadian Market & Forex Dashboard")
-
-# --- Load API keys securely ---
-API_KEY = st.secrets["exchange_rate_api"]["api_key"]
+# --- API keys from Streamlit secrets ---
 ALPHA_API_KEY = st.secrets.get("alpha_vantage", {}).get("api_key", "")
+EXCHANGE_API_KEY = st.secrets.get("exchange_rate_api", {}).get("api_key", "")
+
 ts = TimeSeries(key=ALPHA_API_KEY, output_format='pandas')
 
+# --- Cached fetch of stock data ---
 @st.cache_data(ttl=3600)
 def get_stock_data_alpha(ticker):
     try:
@@ -41,9 +39,10 @@ def get_stock_data_alpha(ticker):
         st.error(f"Error loading {ticker} from Alpha Vantage: {e}")
         return None
 
+# --- Cached fetch of exchange rates ---
 @st.cache_data(ttl=300)
 def get_exchange_rate(from_currency, to_currency):
-    url = f"https://v6.exchangerate-api.com/v6/{API_KEY}/pair/{from_currency}/{to_currency}"
+    url = f"https://v6.exchangerate-api.com/v6/{EXCHANGE_API_KEY}/pair/{from_currency}/{to_currency}"
     try:
         response = requests.get(url)
         data = response.json()
@@ -56,17 +55,33 @@ def get_exchange_rate(from_currency, to_currency):
         st.error(f"Exception fetching rate for {from_currency}/{to_currency}: {e}")
         return None
 
-# --- Sidebar Settings ---
-st.sidebar.header("⚙️ Settings")
-chart_type = st.sidebar.radio("Chart Type", ["Candlestick", "Line"], index=0)
+# --- Stock analysis rules ---
+def analyze_stock(df):
+    if df is None or df.empty:
+        return "No data to analyze."
+    rsi_latest = df['RSI'].iloc[-1]
+    price_latest = df['Close'].iloc[-1]
+    price_week_ago = df['Close'].iloc[-6] if len(df) > 6 else df['Close'].iloc[0]
+    pct_change_week = ((price_latest - price_week_ago) / price_week_ago) * 100
 
-st.sidebar.markdown("📊 **Metrics**")
-show_ma = st.sidebar.checkbox("Show 20/50-Day MA", True)
-show_bollinger = st.sidebar.checkbox("Show Bollinger Bands", True)
-show_rsi = st.sidebar.checkbox("Show RSI", False)
-show_volume = st.sidebar.checkbox("Show Volume", False)
+    analysis = []
+    if rsi_latest < 30:
+        analysis.append("RSI below 30 → Oversold, consider buying.")
+    elif rsi_latest > 70:
+        analysis.append("RSI above 70 → Overbought, consider selling.")
+    else:
+        analysis.append("RSI in normal range.")
 
-# --- Plot function for stock charts ---
+    if pct_change_week > 5:
+        analysis.append(f"Price increased {pct_change_week:.2f}% last week → Bullish trend.")
+    elif pct_change_week < -5:
+        analysis.append(f"Price decreased {pct_change_week:.2f}% last week → Bearish trend.")
+    else:
+        analysis.append("No significant price change last week.")
+
+    return " ".join(analysis)
+
+# --- Chart plotting function ---
 def plot_chart(df, title, chart_type, show_ma, show_bollinger, show_rsi, show_volume, key_prefix):
     fig = go.Figure()
     if chart_type == 'Candlestick':
@@ -100,17 +115,57 @@ def plot_chart(df, title, chart_type, show_ma, show_bollinger, show_rsi, show_vo
         fig_rsi.update_layout(title="RSI", height=200, yaxis_title='RSI')
         st.plotly_chart(fig_rsi, use_container_width=True, key=f"{key_prefix}_rsi")
 
-# --- TSX Composite Proxy Section ---
-st.header("TSX Composite Proxy ETF (XIC.TO)")
-tsx_data = get_stock_data_alpha("XIC.TO")
-if tsx_data is not None:
-    plot_chart(tsx_data, "TSX Composite Proxy ETF (XIC.TO)", chart_type, show_ma, show_bollinger, show_rsi, show_volume, "tsx")
-else:
-    st.error("Failed to load TSX Composite data.")
+# --- Sidebar for settings and portfolio ---
+st.sidebar.header("⚙️ Settings")
+chart_type = st.sidebar.radio("Chart Type", ["Candlestick", "Line"], index=0)
 
-# --- Forex Dashboard Section ---
+st.sidebar.markdown("📊 **Metrics**")
+show_ma = st.sidebar.checkbox("Show 20/50-Day MA", True)
+show_bollinger = st.sidebar.checkbox("Show Bollinger Bands", True)
+show_rsi = st.sidebar.checkbox("Show RSI", False)
+show_volume = st.sidebar.checkbox("Show Volume", False)
+
+st.sidebar.header("📁 Portfolio Input")
+portfolio_input = st.sidebar.text_area(
+    "Enter your portfolio (Ticker:Weight comma-separated)",
+    value="SHOP.TO:0.4, ENB.TO:0.3, BNS.TO:0.3"
+)
+
+portfolio = {}
+try:
+    for item in portfolio_input.split(","):
+        ticker, weight = item.strip().split(":")
+        portfolio[ticker.strip().upper()] = float(weight.strip())
+except Exception:
+    st.sidebar.error("Invalid portfolio input format. Use TICKER:WEIGHT, separated by commas.")
+
+# --- Main App Title ---
+st.title("📈 Canadian Market & Forex Dashboard")
+
+# --- Portfolio Metrics & Analysis ---
+st.header("Portfolio Metrics & Analysis")
+metrics_data = []
+for ticker, weight in portfolio.items():
+    df = get_stock_data_alpha(ticker)
+    if df is not None:
+        latest_price = df['Close'].iloc[-1]
+        analysis_text = analyze_stock(df)
+        metrics_data.append((ticker, weight, latest_price, analysis_text))
+    else:
+        metrics_data.append((ticker, weight, None, "No data"))
+
+for ticker, weight, price, analysis_text in metrics_data:
+    st.subheader(f"{ticker} — Weight: {weight*100:.1f}%")
+    if price:
+        st.write(f"Latest Price: ${price:.2f}")
+    else:
+        st.write("Price data not available.")
+    st.info(analysis_text)
+    if price and ticker in portfolio:
+        plot_chart(df, f"{ticker} Price Chart", chart_type, show_ma, show_bollinger, show_rsi, show_volume, f"portfolio_{ticker}")
+
+# --- Forex Dashboard ---
 st.header("💱 Forex Dashboard")
-
 forex_pairs = [
     ("USD", "CAD"),
     ("EUR", "USD"),
@@ -125,5 +180,13 @@ for i, (from_curr, to_curr) in enumerate(forex_pairs):
         rate = get_exchange_rate(from_curr, to_curr)
         if rate is not None:
             st.metric(label="Exchange Rate", value=f"{rate:.4f}")
+
+            # Simple line plot for recent rates (simulate with dummy data or extend for real history)
+            # For demo, just show current rate as a single point plot
+            fig = go.Figure()
+            fig.add_trace(go.Scatter(x=[0,1], y=[rate*0.98, rate], mode='lines+markers', name=f'{from_curr}/{to_curr}'))
+            fig.update_layout(height=250, margin=dict(l=0, r=0, t=30, b=0))
+            st.plotly_chart(fig, use_container_width=True)
         else:
             st.write("Failed to fetch rate")
+
