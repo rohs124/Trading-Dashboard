@@ -1,18 +1,23 @@
 import os
 os.environ["STREAMLIT_SUPPRESS_STDERR"] = "false"
+
 import streamlit as st
 import pandas as pd
 import yfinance as yf
 from alpha_vantage.timeseries import TimeSeries
 import plotly.graph_objs as go
-st.info("✅ App loaded successfully - initial checkpoint")
 
+st.info("✅ App loaded successfully - initial checkpoint")
 
 st.set_page_config(page_title="Canadian Market Dashboard", layout="wide")
 st.title("📈 Canadian Market & Commodities Dashboard")
 
-# === Alpha Vantage Setup for Stock Data ===
-ALPHA_API_KEY = st.secrets["ALPHA_VANTAGE_API_KEY"]
+# === Get Alpha Vantage API Key safely from secrets ===
+ALPHA_API_KEY = st.secrets.get("ALPHA_VANTAGE_API_KEY", None)
+if ALPHA_API_KEY is None:
+    st.error("❌ Alpha Vantage API key not found in secrets. Please add 'ALPHA_VANTAGE_API_KEY' to Streamlit secrets.")
+    st.stop()
+
 ts = TimeSeries(key=ALPHA_API_KEY, output_format='pandas')
 
 @st.cache_data(ttl=3600)
@@ -43,28 +48,11 @@ def get_stock_data_alpha(ticker):
         st.error(f"Error loading {ticker} from Alpha Vantage: {e}")
         return None
 
-@st.cache_data(ttl=3600)
-def get_commodity_data_yf(ticker):
-    try:
-        df = yf.download(ticker, period="3mo", interval="1d")
-        df = df.dropna()
-        df['MA20'] = df['Close'].rolling(window=20).mean()
-        df['MA50'] = df['Close'].rolling(window=50).mean()
-        df['UpperBand'] = df['MA20'] + 2 * df['Close'].rolling(window=20).std()
-        df['LowerBand'] = df['MA20'] - 2 * df['Close'].rolling(window=20).std()
-        delta = df['Close'].diff()
-        gain = delta.clip(lower=0)
-        loss = -delta.clip(upper=0)
-        avg_gain = gain.rolling(window=14).mean()
-        avg_loss = loss.rolling(window=14).mean()
-        rs = avg_gain / avg_loss
-        df['RSI'] = 100 - (100 / (1 + rs))
-        return df.dropna()
-    except Exception as e:
-        st.error(f"Failed to fetch {ticker} data: {e}")
-        return None
-
 def plot_chart(df, title, chart_type, show_ma, show_bollinger, show_rsi, show_volume, key_prefix):
+    if df is None or df.empty:
+        st.warning(f"No data to plot for {title}")
+        return
+
     fig = go.Figure()
 
     if chart_type == 'Candlestick':
@@ -78,25 +66,28 @@ def plot_chart(df, title, chart_type, show_ma, show_bollinger, show_rsi, show_vo
         fig.add_trace(go.Scatter(x=df.index, y=df['Close'], mode='lines', name='Close'))
 
     if show_ma:
-        fig.add_trace(go.Scatter(x=df.index, y=df['MA20'], mode='lines', name='MA20', line=dict(color='blue')))
-        fig.add_trace(go.Scatter(x=df.index, y=df['MA50'], mode='lines', name='MA50', line=dict(color='green')))
+        if 'MA20' in df.columns and 'MA50' in df.columns:
+            fig.add_trace(go.Scatter(x=df.index, y=df['MA20'], mode='lines', name='MA20', line=dict(color='blue')))
+            fig.add_trace(go.Scatter(x=df.index, y=df['MA50'], mode='lines', name='MA50', line=dict(color='green')))
 
     if show_bollinger:
-        fig.add_trace(go.Scatter(x=df.index, y=df['UpperBand'], name='UpperBand', line=dict(dash='dot', color='gray')))
-        fig.add_trace(go.Scatter(x=df.index, y=df['LowerBand'], name='LowerBand', line=dict(dash='dot', color='gray')))
+        if 'UpperBand' in df.columns and 'LowerBand' in df.columns:
+            fig.add_trace(go.Scatter(x=df.index, y=df['UpperBand'], name='UpperBand', line=dict(dash='dot', color='gray')))
+            fig.add_trace(go.Scatter(x=df.index, y=df['LowerBand'], name='LowerBand', line=dict(dash='dot', color='gray')))
 
     if show_volume and 'Volume' in df.columns:
-        fig.add_trace(go.Bar(x=df.index, y=df['Volume'], name='Volume', marker_color='lightgray', yaxis='y2'))
-        fig.update_layout(yaxis2=dict(overlaying='y', side='right', showgrid=False, title='Volume'))
+        fig.add_trace(go.Bar(x=df.index, y=df['Volume'], name='Volume', marker_color='lightgray'))
+        # Volume shares the same y-axis here for simplicity
 
     fig.update_layout(title=title, height=400, xaxis_title='Date', yaxis_title='Price')
     st.plotly_chart(fig, use_container_width=True, key=f"{key_prefix}_main")
 
-    if show_rsi:
+    if show_rsi and 'RSI' in df.columns:
         fig_rsi = go.Figure()
         fig_rsi.add_trace(go.Scatter(x=df.index, y=df['RSI'], mode='lines', name='RSI'))
         fig_rsi.update_layout(title="RSI", height=200, yaxis_title='RSI')
         st.plotly_chart(fig_rsi, use_container_width=True, key=f"{key_prefix}_rsi")
+
 
 # === Sidebar Settings ===
 st.sidebar.header("⚙️ Settings")
@@ -111,8 +102,7 @@ show_volume = st.sidebar.checkbox("Show Volume", False)
 # === TSX Composite Proxy ===
 st.header("TSX Composite Proxy ETF (XIC.TO)")
 tsx_data = get_stock_data_alpha("XIC.TO")
-if tsx_data is not None:
-    plot_chart(tsx_data, "TSX Composite Proxy ETF (XIC.TO)", chart_type, show_ma, show_bollinger, show_rsi, show_volume, "tsx")
+plot_chart(tsx_data, "TSX Composite Proxy ETF (XIC.TO)", chart_type, show_ma, show_bollinger, show_rsi, show_volume, "tsx")
 
 # === Compare Any Two Tickers ===
 st.header("📈 Compare Any Two Tickers")
@@ -155,7 +145,7 @@ for i, (label, symbol) in enumerate(commodities.items()):
             df['MA20'] = df['Close'].rolling(window=20).mean()
             df['MA50'] = df['Close'].rolling(window=50).mean()
 
-            rolling_std = df['Close'].rolling(window=20).std()  # Calculate std separately
+            rolling_std = df['Close'].rolling(window=20).std()
 
             df['UpperBand'] = df['MA20'] + 2 * rolling_std
             df['LowerBand'] = df['MA20'] - 2 * rolling_std
@@ -185,3 +175,11 @@ for i, (label, symbol) in enumerate(commodities.items()):
         except Exception as e:
             st.error(f"Failed to fetch {symbol} data: {e}")
 
+# ===
+
+# Note: Ensure your requirements.txt includes:
+# streamlit
+# pandas
+# yfinance
+# alpha_vantage
+# plotly
