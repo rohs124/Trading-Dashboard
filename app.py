@@ -1,8 +1,12 @@
+import os
+os.environ["STREAMLIT_SUPPRESS_STDERR"] = "false"
 import streamlit as st
 import pandas as pd
 import yfinance as yf
 from alpha_vantage.timeseries import TimeSeries
 import plotly.graph_objs as go
+st.info("✅ App loaded successfully - initial checkpoint")
+
 
 st.set_page_config(page_title="Canadian Market Dashboard", layout="wide")
 st.title("📈 Canadian Market & Commodities Dashboard")
