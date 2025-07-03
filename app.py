@@ -6,14 +6,14 @@ from alpha_vantage.timeseries import TimeSeries
 
 # --- Page config ---
 st.set_page_config(page_title="Canadian Market & Forex Dashboard", layout="wide")
-st.title("\ud83d\udcc8 Canadian Market & Forex Dashboard")
+st.title("Canadian Market & Forex Dashboard")
 
 # --- Load API keys securely ---
-API_KEY = st.secrets["exchange_rate_api"]["api_key"]
-ALPHA_API_KEY = st.secrets.get("alpha_vantage", {}).get("api_key", "")
+ALPHA_API_KEY = st.secrets["alpha_vantage"]["api_key"]
+EXCHANGE_API_KEY = st.secrets["exchange_rate_api"]["api_key"]
+
 ts = TimeSeries(key=ALPHA_API_KEY, output_format='pandas')
 
-# --- Get TSX Stock Data ---
 @st.cache_data(ttl=3600)
 def get_stock_data_alpha(ticker):
     try:
@@ -42,10 +42,9 @@ def get_stock_data_alpha(ticker):
         st.error(f"Error loading {ticker} from Alpha Vantage: {e}")
         return None
 
-# --- Get Exchange Rate ---
 @st.cache_data(ttl=300)
 def get_exchange_rate(from_currency, to_currency):
-    url = f"https://v6.exchangerate-api.com/v6/{API_KEY}/pair/{from_currency}/{to_currency}"
+    url = f"https://v6.exchangerate-api.com/v6/{EXCHANGE_API_KEY}/pair/{from_currency}/{to_currency}"
     try:
         response = requests.get(url)
         data = response.json()
@@ -59,22 +58,34 @@ def get_exchange_rate(from_currency, to_currency):
         return None
 
 # --- Sidebar Settings ---
-st.sidebar.header("\u2699\ufe0f Settings")
-chart_type = st.sidebar.radio("Chart Type", ["Candlestick", "Line"], index=1)
+st.sidebar.header("⚙️ Settings")
+chart_type = st.sidebar.radio("Chart Type", ["Candlestick", "Line"], index=0)
 
-st.sidebar.markdown("\ud83d\udcca **Metrics**")
+st.sidebar.markdown("📊 **Metrics**")
 show_ma = st.sidebar.checkbox("Show 20/50-Day MA", True)
 show_bollinger = st.sidebar.checkbox("Show Bollinger Bands", True)
 show_rsi = st.sidebar.checkbox("Show RSI", False)
 show_volume = st.sidebar.checkbox("Show Volume", False)
-show_portfolio_metrics = st.sidebar.checkbox("Show Portfolio Metrics", True)
+show_portfolio_metrics = st.sidebar.checkbox("Show Portfolio Metrics (RSI & Volume Combined)", True)
 
-# --- Chart Plotting Function ---
-def plot_chart(df, title, chart_type, show_ma, show_bollinger, show_volume, key_prefix):
+# --- Stock Ticker Selection ---
+st.sidebar.header("🗂 Portfolio Settings")
+portfolio_tickers_input = st.sidebar.text_area(
+    "Enter your stock tickers separated by commas (e.g. SHOP.TO, ENB.TO, BNS.TO)",
+    value="SHOP.TO, ENB.TO, BNS.TO"
+)
+portfolio_tickers = [t.strip().upper() for t in portfolio_tickers_input.split(",") if t.strip()]
+
+# --- Plot function for stock charts ---
+def plot_chart(df, title, chart_type, show_ma, show_bollinger, show_rsi, show_volume, key_prefix):
     fig = go.Figure()
     if chart_type == 'Candlestick':
-        fig.add_trace(go.Candlestick(x=df.index, open=df['Open'], high=df['High'],
-                                     low=df['Low'], close=df['Close'], name='Candlestick'))
+        fig.add_trace(go.Candlestick(
+            x=df.index,
+            open=df['Open'], high=df['High'],
+            low=df['Low'], close=df['Close'],
+            name='Candlestick'
+        ))
     else:
         fig.add_trace(go.Scatter(x=df.index, y=df['Close'], mode='lines', name='Close'))
 
@@ -93,82 +104,103 @@ def plot_chart(df, title, chart_type, show_ma, show_bollinger, show_volume, key_
     fig.update_layout(title=title, height=400, xaxis_title='Date', yaxis_title='Price')
     st.plotly_chart(fig, use_container_width=True, key=f"{key_prefix}_main")
 
-# --- TSX Composite Chart ---
+    if show_rsi:
+        fig_rsi = go.Figure()
+        fig_rsi.add_trace(go.Scatter(x=df.index, y=df['RSI'], mode='lines', name='RSI'))
+        fig_rsi.update_layout(title="RSI", height=200, yaxis_title='RSI')
+        st.plotly_chart(fig_rsi, use_container_width=True, key=f"{key_prefix}_rsi")
+
+# --- Portfolio Combined RSI & Volume Chart ---
+def plot_portfolio_metrics(portfolio_data):
+    fig = go.Figure()
+    for ticker, df in portfolio_data.items():
+        # Close price line (solid)
+        fig.add_trace(go.Scatter(
+            x=df.index, y=df['Close'], mode='lines', name=f"{ticker} Close"
+        ))
+        # RSI line (dashed)
+        fig.add_trace(go.Scatter(
+            x=df.index, y=df['RSI'], mode='lines', name=f"{ticker} RSI", line=dict(dash='dash')
+        ))
+        # Volume line (dotted)
+        fig.add_trace(go.Scatter(
+            x=df.index, y=df['Volume'], mode='lines', name=f"{ticker} Volume", line=dict(dash='dot')
+        ))
+    fig.update_layout(title="Portfolio Metrics: Close Price, RSI (dashed), Volume (dotted)",
+                      height=450, xaxis_title="Date")
+    st.plotly_chart(fig, use_container_width=True, key="portfolio_metrics")
+
+# --- Forex Section ---
+
+st.header("💱 Forex Dashboard")
+
+# Fixed USD/CAD comparison
+usd_cad_rate = get_exchange_rate("USD", "CAD")
+if usd_cad_rate:
+    st.metric("USD/CAD Exchange Rate", f"{usd_cad_rate:.4f}")
+else:
+    st.write("Failed to fetch USD/CAD rate")
+
+# User selects forex pairs to compare
+st.subheader("Compare Forex Pairs")
+user_forex_from = st.text_input("From Currency (e.g. EUR)", "EUR").upper()
+user_forex_to = st.text_input("To Currency (e.g. USD)", "USD").upper()
+
+# Show rate for user selection
+user_rate = get_exchange_rate(user_forex_from, user_forex_to)
+if user_rate:
+    st.metric(f"{user_forex_from}/{user_forex_to} Exchange Rate", f"{user_rate:.4f}")
+else:
+    st.write(f"Failed to fetch {user_forex_from}/{user_forex_to} rate")
+
+# Historical data is not provided by exchangerate-api free tier, so skipping graphs for dynamic pairs
+
+# --- TSX Composite Proxy Section ---
 st.header("TSX Composite Proxy ETF (XIC.TO)")
 tsx_data = get_stock_data_alpha("XIC.TO")
 if tsx_data is not None:
-    plot_chart(tsx_data, "TSX Composite Proxy ETF (XIC.TO)", chart_type, show_ma, show_bollinger, show_volume, "tsx")
-
-# --- Forex Section ---
-st.header("\ud83d\udcb1 Forex Tracker")
-
-st.subheader("USD/CAD Live Exchange Rate")
-usd_cad = get_exchange_rate("USD", "CAD")
-if usd_cad:
-    st.metric(label="USD to CAD", value=f"{usd_cad:.4f}")
-
-st.subheader("Dynamic Forex Comparison")
-col1, col2 = st.columns(2)
-with col1:
-    fx_from = st.text_input("From Currency (e.g., EUR)", value="EUR")
-with col2:
-    fx_to = st.text_input("To Currency (e.g., USD)", value="USD")
-
-rate = get_exchange_rate(fx_from.upper(), fx_to.upper())
-if rate:
-    st.metric(label=f"{fx_from.upper()} to {fx_to.upper()}", value=f"{rate:.4f}")
+    plot_chart(tsx_data, "TSX Composite Proxy ETF (XIC.TO)", chart_type, show_ma, show_bollinger, show_rsi, show_volume, "tsx")
+else:
+    st.error("Failed to load TSX Composite data.")
 
 # --- Portfolio Section ---
-st.header("\ud83d\udcbc Portfolio Metrics")
-portfolio_input = st.text_input("Enter tickers with weights (e.g., SHOP.TO,10 ENB.TO,5 BNS.TO,20)")
-portfolio = {}
-if portfolio_input:
-    try:
-        for item in portfolio_input.split():
-            ticker, weight = item.split(',')
-            portfolio[ticker.strip().upper()] = float(weight)
-    except:
-        st.error("Invalid input format. Use: TICKER,WEIGHT")
+st.header("📊 Portfolio")
 
-if portfolio:
-    portfolio_df = pd.DataFrame()
-    rsi_df = pd.DataFrame()
-    volume_df = pd.DataFrame()
+portfolio_data = {}
+for ticker in portfolio_tickers:
+    df = get_stock_data_alpha(ticker)
+    if df is not None:
+        portfolio_data[ticker] = df
+    else:
+        st.warning(f"Data for {ticker} not available.")
 
-    for ticker, weight in portfolio.items():
-        data = get_stock_data_alpha(ticker)
-        if data is not None:
-            portfolio_df[ticker] = data['Close'] * weight
-            rsi_df[ticker] = data['RSI']
-            volume_df[ticker] = data['Volume']
-
-    st.subheader("\ud83d\udd22 Combined Close Price (Weighted)")
+if portfolio_data:
     fig = go.Figure()
-    for col in portfolio_df.columns:
-        fig.add_trace(go.Scatter(x=portfolio_df.index, y=portfolio_df[col], mode='lines', name=col))
-    fig.update_layout(title="Portfolio Close Prices", height=400, xaxis_title="Date", yaxis_title="Price")
-    st.plotly_chart(fig, use_container_width=True)
+    for ticker, df in portfolio_data.items():
+        fig.add_trace(go.Scatter(
+            x=df.index, y=df['Close'], mode='lines', name=ticker
+        ))
+    fig.update_layout(title="Portfolio Close Prices", height=450, xaxis_title="Date", yaxis_title="Price")
+    st.plotly_chart(fig, use_container_width=True, key="portfolio_close_prices")
 
-    st.subheader("RSI & Volume (per stock)")
-    fig_rsi = go.Figure()
-    for col in rsi_df.columns:
-        fig_rsi.add_trace(go.Scatter(x=rsi_df.index, y=rsi_df[col], name=f"{col} RSI", line=dict(dash='dot')))
-    fig_rsi.update_layout(title="Portfolio RSI", height=300)
-    st.plotly_chart(fig_rsi, use_container_width=True)
+    if show_portfolio_metrics:
+        plot_portfolio_metrics(portfolio_data)
 
-    fig_vol = go.Figure()
-    for col in volume_df.columns:
-        fig_vol.add_trace(go.Scatter(x=volume_df.index, y=volume_df[col], name=f"{col} Volume", line=dict(dash='solid')))
-    fig_vol.update_layout(title="Portfolio Volume", height=300)
-    st.plotly_chart(fig_vol, use_container_width=True)
-
-    st.subheader("\ud83e\uddd1\u200d\ud83e\udd1d AI-Driven Portfolio Suggestions")
-    for ticker in rsi_df.columns:
-        latest_rsi = rsi_df[ticker].iloc[-1]
-        if latest_rsi < 30:
-            st.info(f"{ticker} is oversold (RSI={latest_rsi:.2f}) - Potential Buy")
-        elif latest_rsi > 70:
-            st.warning(f"{ticker} is overbought (RSI={latest_rsi:.2f}) - Consider Reducing")
-        else:
-            st.success(f"{ticker} RSI is Neutral ({latest_rsi:.2f})")
-
+# --- Simple Rule-Based LLM-Like Analysis ---
+st.header("🤖 Portfolio Analysis")
+analysis_msgs = []
+for ticker, df in portfolio_data.items():
+    latest_rsi = df['RSI'].iloc[-1]
+    weekly_change = (df['Close'].iloc[-1] - df['Close'].iloc[-6]) / df['Close'].iloc[-6] * 100
+    msg = f"**{ticker}**: "
+    if latest_rsi < 30:
+        msg += "RSI below 30, stock might be oversold - consider buying. "
+    elif latest_rsi > 70:
+        msg += "RSI above 70, stock might be overbought - consider caution. "
+    if weekly_change > 5:
+        msg += "Price increased >5% in last week, trend is bullish. "
+    elif weekly_change < -5:
+        msg += "Price decreased >5% in last week, trend is bearish. "
+    analysis_msgs.append(msg)
+for msg in analysis_msgs:
+    st.write(msg)
