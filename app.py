@@ -8,7 +8,7 @@ st.set_page_config(page_title="Canadian Market Dashboard", layout="wide")
 st.title("📈 Canadian Market & Commodities Dashboard")
 
 # === Alpha Vantage Setup for Stock Data ===
-ALPHA_API_KEY = "99VGI0IR5EUTR4CP"
+ALPHA_API_KEY = st.secrets["ALPHA_VANTAGE_API_KEY"]
 ts = TimeSeries(key=ALPHA_API_KEY, output_format='pandas')
 
 @st.cache_data(ttl=3600)
