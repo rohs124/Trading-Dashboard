@@ -61,12 +61,13 @@ def get_exchange_rate(from_currency, to_currency):
 st.sidebar.header("⚙️ Settings")
 chart_type = st.sidebar.radio("Chart Type", ["Candlestick", "Line"], index=0)
 
-st.sidebar.markdown("📊 **Metrics**")
-show_ma = st.sidebar.checkbox("Show 20/50-Day MA", True)
-show_bollinger = st.sidebar.checkbox("Show Bollinger Bands", True)
-show_rsi = st.sidebar.checkbox("Show RSI", False)
-show_volume = st.sidebar.checkbox("Show Volume", False)
-show_portfolio_metrics = st.sidebar.checkbox("Show Portfolio Metrics (RSI & Volume Combined)", True)
+st.sidebar.markdown("📊 **Portfolio Metrics to Display**")
+available_metrics = ['Close', 'MA20', 'MA50', 'UpperBand', 'LowerBand', 'RSI', 'Volume']
+selected_metrics = st.sidebar.multiselect(
+    "Select metrics to plot for portfolio",
+    options=available_metrics,
+    default=['Close']
+)
 
 # --- Stock Ticker Selection ---
 st.sidebar.header("🗂 Portfolio Settings")
@@ -77,61 +78,135 @@ portfolio_tickers_input = st.sidebar.text_area(
 portfolio_tickers = [t.strip().upper() for t in portfolio_tickers_input.split(",") if t.strip()]
 
 # --- Plot function for stock charts ---
-def plot_chart(df, title, chart_type, show_ma, show_bollinger, show_rsi, show_volume, key_prefix):
+def plot_chart(df, title, chart_type, selected_metrics, key_prefix):
     fig = go.Figure()
-    if chart_type == 'Candlestick':
-        fig.add_trace(go.Candlestick(
-            x=df.index,
-            open=df['Open'], high=df['High'],
-            low=df['Low'], close=df['Close'],
-            name='Candlestick'
-        ))
-    else:
-        fig.add_trace(go.Scatter(x=df.index, y=df['Close'], mode='lines', name='Close'))
+    # Plot Close as either candlestick or line (if selected)
+    if "Close" in selected_metrics:
+        if chart_type == 'Candlestick':
+            fig.add_trace(go.Candlestick(
+                x=df.index,
+                open=df['Open'], high=df['High'],
+                low=df['Low'], close=df['Close'],
+                name='Candlestick'
+            ))
+        else:
+            fig.add_trace(go.Scatter(x=df.index, y=df['Close'], mode='lines', name='Close'))
 
-    if show_ma:
-        fig.add_trace(go.Scatter(x=df.index, y=df['MA20'], mode='lines', name='MA20', line=dict(color='blue')))
-        fig.add_trace(go.Scatter(x=df.index, y=df['MA50'], mode='lines', name='MA50', line=dict(color='green')))
+    # Define line styles per metric
+    line_styles = {
+        "Close": "solid",
+        "MA20": "dash",
+        "MA50": "dot",
+        "UpperBand": "dashdot",
+        "LowerBand": "longdash",
+        "RSI": "dash",
+    }
 
-    if show_bollinger:
-        fig.add_trace(go.Scatter(x=df.index, y=df['UpperBand'], name='UpperBand', line=dict(dash='dot', color='gray')))
-        fig.add_trace(go.Scatter(x=df.index, y=df['LowerBand'], name='LowerBand', line=dict(dash='dot', color='gray')))
+    for metric in selected_metrics:
+        if metric == "Close":
+            continue  # Already handled above
+        if metric == "Volume":
+            fig.add_trace(go.Bar(
+                x=df.index,
+                y=df["Volume"],
+                name='Volume',
+                marker_color='lightgray',
+                yaxis='y2',
+                opacity=0.3
+            ))
+        elif metric in df.columns:
+            fig.add_trace(go.Scatter(
+                x=df.index,
+                y=df[metric],
+                mode='lines',
+                name=metric,
+                line=dict(dash=line_styles.get(metric, 'solid'))
+            ))
 
-    if show_volume and 'Volume' in df.columns:
-        fig.add_trace(go.Bar(x=df.index, y=df['Volume'], name='Volume', marker_color='lightgray', yaxis='y2'))
-        fig.update_layout(yaxis2=dict(overlaying='y', side='right', showgrid=False, title='Volume'))
-
-    fig.update_layout(title=title, height=400, xaxis_title='Date', yaxis_title='Price')
+    # Layout adjustments
+    layout = dict(
+        title=title,
+        xaxis_title='Date',
+        height=450,
+    )
+    if "Volume" in selected_metrics:
+        layout['yaxis2'] = dict(
+            overlaying='y',
+            side='right',
+            title='Volume',
+            showgrid=False,
+            position=0.15
+        )
+    fig.update_layout(layout)
     st.plotly_chart(fig, use_container_width=True, key=f"{key_prefix}_main")
 
-    if show_rsi:
-        fig_rsi = go.Figure()
-        fig_rsi.add_trace(go.Scatter(x=df.index, y=df['RSI'], mode='lines', name='RSI'))
-        fig_rsi.update_layout(title="RSI", height=200, yaxis_title='RSI')
-        st.plotly_chart(fig_rsi, use_container_width=True, key=f"{key_prefix}_rsi")
+@st.cache_data(ttl=3600)
+def get_portfolio_data(tickers):
+    data = {}
+    for ticker in tickers:
+        df = get_stock_data_alpha(ticker)
+        if df is not None:
+            data[ticker] = df
+    return data
 
-# --- Portfolio Combined RSI & Volume Chart ---
-def plot_portfolio_metrics(portfolio_data):
+# --- Portfolio Combined Metrics Plot ---
+def plot_portfolio_metrics(portfolio_data, selected_metrics):
     fig = go.Figure()
+
+    # Line styles for metrics
+    line_styles = {
+        "Close": "solid",
+        "MA20": "dash",
+        "MA50": "dot",
+        "UpperBand": "dashdot",
+        "LowerBand": "longdash",
+        "RSI": "dash",
+    }
+
+    volume_selected = "Volume" in selected_metrics
+
     for ticker, df in portfolio_data.items():
-        # Close price line (solid)
-        fig.add_trace(go.Scatter(
-            x=df.index, y=df['Close'], mode='lines', name=f"{ticker} Close"
-        ))
-        # RSI line (dashed)
-        fig.add_trace(go.Scatter(
-            x=df.index, y=df['RSI'], mode='lines', name=f"{ticker} RSI", line=dict(dash='dash')
-        ))
-        # Volume line (dotted)
-        fig.add_trace(go.Scatter(
-            x=df.index, y=df['Volume'], mode='lines', name=f"{ticker} Volume", line=dict(dash='dot')
-        ))
-    fig.update_layout(title="Portfolio Metrics: Close Price, RSI (dashed), Volume (dotted)",
-                      height=450, xaxis_title="Date")
+        for metric in selected_metrics:
+            if metric == "Volume":
+                continue
+            if metric in df.columns:
+                fig.add_trace(go.Scatter(
+                    x=df.index,
+                    y=df[metric],
+                    mode='lines',
+                    name=f"{ticker} {metric}",
+                    line=dict(dash=line_styles.get(metric, 'solid'))
+                ))
+
+    if volume_selected:
+        for ticker, df in portfolio_data.items():
+            if "Volume" in df.columns:
+                fig.add_trace(go.Bar(
+                    x=df.index,
+                    y=df["Volume"],
+                    name=f"{ticker} Volume",
+                    yaxis="y2",
+                    opacity=0.3
+                ))
+
+    layout = dict(
+        title="Portfolio Metrics",
+        xaxis_title="Date",
+        height=500,
+        legend_title="Stock and Metric"
+    )
+    if volume_selected:
+        layout["yaxis2"] = dict(
+            overlaying='y',
+            side='right',
+            title='Volume',
+            showgrid=False,
+            position=0.15
+        )
+    fig.update_layout(layout)
     st.plotly_chart(fig, use_container_width=True, key="portfolio_metrics")
 
 # --- Forex Section ---
-
 st.header("💱 Forex Dashboard")
 
 # Fixed USD/CAD comparison
@@ -153,38 +228,22 @@ if user_rate:
 else:
     st.write(f"Failed to fetch {user_forex_from}/{user_forex_to} rate")
 
-# Historical data is not provided by exchangerate-api free tier, so skipping graphs for dynamic pairs
-
 # --- TSX Composite Proxy Section ---
 st.header("TSX Composite Proxy ETF (XIC.TO)")
 tsx_data = get_stock_data_alpha("XIC.TO")
 if tsx_data is not None:
-    plot_chart(tsx_data, "TSX Composite Proxy ETF (XIC.TO)", chart_type, show_ma, show_bollinger, show_rsi, show_volume, "tsx")
+    plot_chart(tsx_data, "TSX Composite Proxy ETF (XIC.TO)", chart_type, available_metrics, "tsx")
 else:
     st.error("Failed to load TSX Composite data.")
 
 # --- Portfolio Section ---
 st.header("📊 Portfolio")
-
-portfolio_data = {}
-for ticker in portfolio_tickers:
-    df = get_stock_data_alpha(ticker)
-    if df is not None:
-        portfolio_data[ticker] = df
-    else:
-        st.warning(f"Data for {ticker} not available.")
-
-if portfolio_data:
-    fig = go.Figure()
-    for ticker, df in portfolio_data.items():
-        fig.add_trace(go.Scatter(
-            x=df.index, y=df['Close'], mode='lines', name=ticker
-        ))
-    fig.update_layout(title="Portfolio Close Prices", height=450, xaxis_title="Date", yaxis_title="Price")
-    st.plotly_chart(fig, use_container_width=True, key="portfolio_close_prices")
-
-    if show_portfolio_metrics:
-        plot_portfolio_metrics(portfolio_data)
+portfolio_data = get_portfolio_data(portfolio_tickers)
+if not portfolio_data:
+    st.warning("No portfolio data loaded. Check your tickers.")
+else:
+    # Plot portfolio combined metrics
+    plot_portfolio_metrics(portfolio_data, selected_metrics)
 
 # --- Simple Rule-Based LLM-Like Analysis ---
 st.header("🤖 Portfolio Analysis")
