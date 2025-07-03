@@ -4,13 +4,12 @@ import requests
 import plotly.graph_objs as go
 from alpha_vantage.timeseries import TimeSeries
 
-# --- API keys from Streamlit secrets ---
+# --- API keys ---
 ALPHA_API_KEY = st.secrets.get("alpha_vantage", {}).get("api_key", "")
 EXCHANGE_API_KEY = st.secrets.get("exchange_rate_api", {}).get("api_key", "")
 
 ts = TimeSeries(key=ALPHA_API_KEY, output_format='pandas')
 
-# --- Cached fetch of stock data ---
 @st.cache_data(ttl=3600)
 def get_stock_data_alpha(ticker):
     try:
@@ -23,10 +22,13 @@ def get_stock_data_alpha(ticker):
             '5. volume': 'Volume'
         })
         df = df.sort_index()
+        # Calculate moving averages & Bollinger Bands for close price
         df['MA20'] = df['Close'].rolling(window=20).mean()
         df['MA50'] = df['Close'].rolling(window=50).mean()
         df['UpperBand'] = df['MA20'] + 2 * df['Close'].rolling(window=20).std()
         df['LowerBand'] = df['MA20'] - 2 * df['Close'].rolling(window=20).std()
+
+        # RSI calculation
         delta = df['Close'].diff()
         gain = delta.clip(lower=0)
         loss = -delta.clip(upper=0)
@@ -34,12 +36,12 @@ def get_stock_data_alpha(ticker):
         avg_loss = loss.rolling(window=14).mean()
         rs = avg_gain / avg_loss
         df['RSI'] = 100 - (100 / (1 + rs))
+
         return df.dropna()
     except Exception as e:
         st.error(f"Error loading {ticker} from Alpha Vantage: {e}")
         return None
 
-# --- Cached fetch of exchange rates ---
 @st.cache_data(ttl=300)
 def get_exchange_rate(from_currency, to_currency):
     url = f"https://v6.exchangerate-api.com/v6/{EXCHANGE_API_KEY}/pair/{from_currency}/{to_currency}"
@@ -55,34 +57,7 @@ def get_exchange_rate(from_currency, to_currency):
         st.error(f"Exception fetching rate for {from_currency}/{to_currency}: {e}")
         return None
 
-# --- Stock analysis rules ---
-def analyze_stock(df):
-    if df is None or df.empty:
-        return "No data to analyze."
-    rsi_latest = df['RSI'].iloc[-1]
-    price_latest = df['Close'].iloc[-1]
-    price_week_ago = df['Close'].iloc[-6] if len(df) > 6 else df['Close'].iloc[0]
-    pct_change_week = ((price_latest - price_week_ago) / price_week_ago) * 100
-
-    analysis = []
-    if rsi_latest < 30:
-        analysis.append("RSI below 30 → Oversold, consider buying.")
-    elif rsi_latest > 70:
-        analysis.append("RSI above 70 → Overbought, consider selling.")
-    else:
-        analysis.append("RSI in normal range.")
-
-    if pct_change_week > 5:
-        analysis.append(f"Price increased {pct_change_week:.2f}% last week → Bullish trend.")
-    elif pct_change_week < -5:
-        analysis.append(f"Price decreased {pct_change_week:.2f}% last week → Bearish trend.")
-    else:
-        analysis.append("No significant price change last week.")
-
-    return " ".join(analysis)
-
-# --- Chart plotting function ---
-def plot_chart(df, title, chart_type, show_ma, show_bollinger, show_rsi, show_volume, key_prefix):
+def plot_tsx_chart(df, chart_type, show_ma, show_bollinger, show_rsi, show_volume):
     fig = go.Figure()
     if chart_type == 'Candlestick':
         fig.add_trace(go.Candlestick(
@@ -106,25 +81,92 @@ def plot_chart(df, title, chart_type, show_ma, show_bollinger, show_rsi, show_vo
         fig.add_trace(go.Bar(x=df.index, y=df['Volume'], name='Volume', marker_color='lightgray', yaxis='y2'))
         fig.update_layout(yaxis2=dict(overlaying='y', side='right', showgrid=False, title='Volume'))
 
-    fig.update_layout(title=title, height=400, xaxis_title='Date', yaxis_title='Price')
-    st.plotly_chart(fig, use_container_width=True, key=f"{key_prefix}_main")
+    fig.update_layout(title="TSX Composite Proxy ETF (XIC.TO)", height=400, xaxis_title='Date', yaxis_title='Price')
+    st.plotly_chart(fig, use_container_width=True)
 
     if show_rsi:
         fig_rsi = go.Figure()
         fig_rsi.add_trace(go.Scatter(x=df.index, y=df['RSI'], mode='lines', name='RSI'))
         fig_rsi.update_layout(title="RSI", height=200, yaxis_title='RSI')
-        st.plotly_chart(fig_rsi, use_container_width=True, key=f"{key_prefix}_rsi")
+        st.plotly_chart(fig_rsi, use_container_width=True)
 
-# --- Sidebar for settings and portfolio ---
+def plot_portfolio_combined_chart(dfs, tickers, show_ma, show_bollinger):
+    fig = go.Figure()
+    for ticker in tickers:
+        df = dfs.get(ticker)
+        if df is None:
+            continue
+        fig.add_trace(go.Scatter(x=df.index, y=df['Close'], mode='lines', name=f"{ticker} Close"))
+        if show_ma:
+            fig.add_trace(go.Scatter(x=df.index, y=df['MA20'], mode='lines', name=f"{ticker} MA20", line=dict(dash='dot')))
+            fig.add_trace(go.Scatter(x=df.index, y=df['MA50'], mode='lines', name=f"{ticker} MA50", line=dict(dash='dot')))
+        if show_bollinger:
+            fig.add_trace(go.Scatter(x=df.index, y=df['UpperBand'], name=f"{ticker} UpperBand", line=dict(dash='dash')))
+            fig.add_trace(go.Scatter(x=df.index, y=df['LowerBand'], name=f"{ticker} LowerBand", line=dict(dash='dash')))
+
+    fig.update_layout(
+        title="Portfolio Stocks Close Price Comparison",
+        height=500,
+        xaxis_title="Date",
+        yaxis_title="Price",
+        legend_title="Ticker / Metric",
+    )
+    st.plotly_chart(fig, use_container_width=True)
+
+def plot_portfolio_rsi_volume_chart(dfs, tickers):
+    fig = go.Figure()
+    # Add RSI traces on left y-axis
+    for ticker in tickers:
+        df = dfs.get(ticker)
+        if df is None:
+            continue
+        fig.add_trace(go.Scatter(
+            x=df.index, y=df['RSI'], mode='lines', name=f"{ticker} RSI",
+            yaxis='y1'
+        ))
+
+    # Add Volume bars on right y-axis
+    for ticker in tickers:
+        df = dfs.get(ticker)
+        if df is None:
+            continue
+        fig.add_trace(go.Bar(
+            x=df.index, y=df['Volume'], name=f"{ticker} Volume", opacity=0.3,
+            yaxis='y2'
+        ))
+
+    fig.update_layout(
+        title="Portfolio RSI and Volume",
+        height=400,
+        yaxis=dict(
+            title="RSI",
+            range=[0, 100],
+            side='left'
+        ),
+        yaxis2=dict(
+            title="Volume",
+            overlaying='y',
+            side='right',
+            showgrid=False,
+            position=0.85
+        ),
+        xaxis_title="Date",
+        legend_title="Ticker / Metric",
+        barmode='overlay'
+    )
+    st.plotly_chart(fig, use_container_width=True)
+
+# --- Sidebar ---
 st.sidebar.header("⚙️ Settings")
 chart_type = st.sidebar.radio("Chart Type", ["Candlestick", "Line"], index=0)
 
 st.sidebar.markdown("📊 **Metrics**")
 show_ma = st.sidebar.checkbox("Show 20/50-Day MA", True)
 show_bollinger = st.sidebar.checkbox("Show Bollinger Bands", True)
-show_rsi = st.sidebar.checkbox("Show RSI", False)
+show_rsi = st.sidebar.checkbox("Show RSI", False)  
 show_volume = st.sidebar.checkbox("Show Volume", False)
 
+# Portfolio input & multi-select
 st.sidebar.header("📁 Portfolio Input")
 portfolio_input = st.sidebar.text_area(
     "Enter your portfolio (Ticker:Weight comma-separated)",
@@ -139,32 +181,36 @@ try:
 except Exception:
     st.sidebar.error("Invalid portfolio input format. Use TICKER:WEIGHT, separated by commas.")
 
-# --- Main App Title ---
+selected_tickers = st.sidebar.multiselect(
+    "Select tickers to compare",
+    options=list(portfolio.keys()),
+    default=list(portfolio.keys())
+)
+
 st.title("📈 Canadian Market & Forex Dashboard")
 
-# --- Portfolio Metrics & Analysis ---
-st.header("Portfolio Metrics & Analysis")
-metrics_data = []
-for ticker, weight in portfolio.items():
+tsx_data = get_stock_data_alpha("XIC.TO")
+if tsx_data is not None:
+    plot_tsx_chart(tsx_data, chart_type, show_ma, show_bollinger, show_rsi, show_volume)
+else:
+    st.error("Failed to load TSX Composite data.")
+
+portfolio_dfs = {}
+for ticker in selected_tickers:
     df = get_stock_data_alpha(ticker)
     if df is not None:
-        latest_price = df['Close'].iloc[-1]
-        analysis_text = analyze_stock(df)
-        metrics_data.append((ticker, weight, latest_price, analysis_text))
+        portfolio_dfs[ticker] = df
     else:
-        metrics_data.append((ticker, weight, None, "No data"))
+        st.warning(f"Failed to load data for {ticker}")
 
-for ticker, weight, price, analysis_text in metrics_data:
-    st.subheader(f"{ticker} — Weight: {weight*100:.1f}%")
-    if price:
-        st.write(f"Latest Price: ${price:.2f}")
-    else:
-        st.write("Price data not available.")
-    st.info(analysis_text)
-    if price and ticker in portfolio:
-        plot_chart(df, f"{ticker} Price Chart", chart_type, show_ma, show_bollinger, show_rsi, show_volume, f"portfolio_{ticker}")
+if portfolio_dfs:
+    plot_portfolio_combined_chart(portfolio_dfs, selected_tickers, show_ma, show_bollinger)
+    if show_rsi or show_volume:
+        plot_portfolio_rsi_volume_chart(portfolio_dfs, selected_tickers)
+else:
+    st.info("No portfolio tickers selected or data unavailable.")
 
-# --- Forex Dashboard ---
+# Forex dashboard
 st.header("💱 Forex Dashboard")
 forex_pairs = [
     ("USD", "CAD"),
@@ -180,13 +226,5 @@ for i, (from_curr, to_curr) in enumerate(forex_pairs):
         rate = get_exchange_rate(from_curr, to_curr)
         if rate is not None:
             st.metric(label="Exchange Rate", value=f"{rate:.4f}")
-
-            # Simple line plot for recent rates (simulate with dummy data or extend for real history)
-            # For demo, just show current rate as a single point plot
-            fig = go.Figure()
-            fig.add_trace(go.Scatter(x=[0,1], y=[rate*0.98, rate], mode='lines+markers', name=f'{from_curr}/{to_curr}'))
-            fig.update_layout(height=250, margin=dict(l=0, r=0, t=30, b=0))
-            st.plotly_chart(fig, use_container_width=True)
         else:
             st.write("Failed to fetch rate")
-
