@@ -3,6 +3,7 @@ import pandas as pd
 import requests
 import plotly.graph_objs as go
 from alpha_vantage.timeseries import TimeSeries
+from alpha_vantage.foreignexchange import ForeignExchange
 
 # --- Page config ---
 st.set_page_config(page_title="Canadian Market & Forex Dashboard", layout="wide")
@@ -13,6 +14,7 @@ ALPHA_API_KEY = st.secrets["alpha_vantage"]["api_key"]
 EXCHANGE_API_KEY = st.secrets["exchange_rate_api"]["api_key"]
 
 ts = TimeSeries(key=ALPHA_API_KEY, output_format='pandas')
+fx = ForeignExchange(key=ALPHA_API_KEY)
 
 @st.cache_data(ttl=3600)
 def get_stock_data_alpha(ticker):
@@ -57,6 +59,25 @@ def get_exchange_rate(from_currency, to_currency):
         st.error(f"Exception fetching rate for {from_currency}/{to_currency}: {e}")
         return None
 
+@st.cache_data(ttl=3600)
+def get_fx_daily_data(from_currency, to_currency):
+    try:
+        data, _ = fx.get_currency_exchange_daily(from_symbol=from_currency, to_symbol=to_currency, outputsize='compact')
+        df = pd.DataFrame.from_dict(data, orient='index')
+        df.index = pd.to_datetime(df.index)
+        df = df.rename(columns={
+            '1. open': 'Open',
+            '2. high': 'High',
+            '3. low': 'Low',
+            '4. close': 'Close'
+        })
+        df = df.sort_index()
+        df = df.astype(float)
+        return df
+    except Exception as e:
+        st.error(f"Error loading FX data for {from_currency}/{to_currency}: {e}")
+        return None
+
 # --- Sidebar Settings ---
 st.sidebar.header("⚙️ Settings")
 chart_type = st.sidebar.radio("Chart Type", ["Candlestick", "Line"], index=0)
@@ -80,7 +101,6 @@ portfolio_tickers = [t.strip().upper() for t in portfolio_tickers_input.split(",
 # --- Plot function for stock charts ---
 def plot_chart(df, title, chart_type, selected_metrics, key_prefix):
     fig = go.Figure()
-    # Plot Close as either candlestick or line (if selected)
     if "Close" in selected_metrics:
         if chart_type == 'Candlestick':
             fig.add_trace(go.Candlestick(
@@ -92,7 +112,6 @@ def plot_chart(df, title, chart_type, selected_metrics, key_prefix):
         else:
             fig.add_trace(go.Scatter(x=df.index, y=df['Close'], mode='lines', name='Close'))
 
-    # Define line styles per metric
     line_styles = {
         "Close": "solid",
         "MA20": "dash",
@@ -104,7 +123,7 @@ def plot_chart(df, title, chart_type, selected_metrics, key_prefix):
 
     for metric in selected_metrics:
         if metric == "Close":
-            continue  # Already handled above
+            continue
         if metric == "Volume":
             fig.add_trace(go.Bar(
                 x=df.index,
@@ -123,7 +142,6 @@ def plot_chart(df, title, chart_type, selected_metrics, key_prefix):
                 line=dict(dash=line_styles.get(metric, 'solid'))
             ))
 
-    # Layout adjustments
     layout = dict(
         title=title,
         xaxis_title='Date',
@@ -149,11 +167,8 @@ def get_portfolio_data(tickers):
             data[ticker] = df
     return data
 
-# --- Portfolio Combined Metrics Plot ---
 def plot_portfolio_metrics(portfolio_data, selected_metrics):
     fig = go.Figure()
-
-    # Line styles for metrics
     line_styles = {
         "Close": "solid",
         "MA20": "dash",
@@ -162,7 +177,6 @@ def plot_portfolio_metrics(portfolio_data, selected_metrics):
         "LowerBand": "longdash",
         "RSI": "dash",
     }
-
     volume_selected = "Volume" in selected_metrics
 
     for ticker, df in portfolio_data.items():
@@ -209,7 +223,7 @@ def plot_portfolio_metrics(portfolio_data, selected_metrics):
 # --- Forex Section ---
 st.header("💱 Forex Dashboard")
 
-# Fixed USD/CAD comparison
+# Fixed USD/CAD comparison metric
 usd_cad_rate = get_exchange_rate("USD", "CAD")
 if usd_cad_rate:
     st.metric("USD/CAD Exchange Rate", f"{usd_cad_rate:.4f}")
@@ -218,21 +232,43 @@ else:
 
 # User selects forex pairs to compare
 st.subheader("Compare Forex Pairs")
-user_forex_from = st.text_input("From Currency (e.g. EUR)", "EUR").upper()
-user_forex_to = st.text_input("To Currency (e.g. USD)", "USD").upper()
+currency_options = ["USD", "CAD", "EUR", "GBP", "JPY", "AUD", "CHF", "NZD"]
 
-# Show rate for user selection
-user_rate = get_exchange_rate(user_forex_from, user_forex_to)
-if user_rate:
-    st.metric(f"{user_forex_from}/{user_forex_to} Exchange Rate", f"{user_rate:.4f}")
+user_forex_from = st.selectbox("From Currency", options=currency_options, index=0)
+user_forex_to = st.selectbox("To Currency", options=currency_options, index=1)
+
+if user_forex_from == user_forex_to:
+    st.warning("Please select two different currencies.")
 else:
-    st.write(f"Failed to fetch {user_forex_from}/{user_forex_to} rate")
+    user_rate = get_exchange_rate(user_forex_from, user_forex_to)
+    if user_rate:
+        st.metric(f"{user_forex_from}/{user_forex_to} Exchange Rate", f"{user_rate:.4f}")
+    else:
+        st.write(f"Failed to fetch {user_forex_from}/{user_forex_to} rate")
+
+    # Plot FX historical data using Alpha Vantage
+    fx_df = get_fx_daily_data(user_forex_from, user_forex_to)
+    if fx_df is not None:
+        fig_fx = go.Figure()
+        fig_fx.add_trace(go.Scatter(
+            x=fx_df.index,
+            y=fx_df['Close'],
+            mode='lines',
+            name=f"{user_forex_from}/{user_forex_to} Close"
+        ))
+        fig_fx.update_layout(
+            title=f"Historical FX Rates: {user_forex_from}/{user_forex_to}",
+            xaxis_title="Date",
+            yaxis_title="Exchange Rate",
+            height=400
+        )
+        st.plotly_chart(fig_fx, use_container_width=True, key="fx_historical")
 
 # --- TSX Composite Proxy Section ---
 st.header("TSX Composite Proxy ETF (XIC.TO)")
 tsx_data = get_stock_data_alpha("XIC.TO")
 if tsx_data is not None:
-    plot_chart(tsx_data, "TSX Composite Proxy ETF (XIC.TO)", chart_type, available_metrics, "tsx")
+    plot_chart(tsx_data, "TSX Composite Proxy ETF (XIC.TO)", chart_type, selected_metrics, "tsx")
 else:
     st.error("Failed to load TSX Composite data.")
 
@@ -242,7 +278,6 @@ portfolio_data = get_portfolio_data(portfolio_tickers)
 if not portfolio_data:
     st.warning("No portfolio data loaded. Check your tickers.")
 else:
-    # Plot portfolio combined metrics
     plot_portfolio_metrics(portfolio_data, selected_metrics)
 
 # --- Simple Rule-Based LLM-Like Analysis ---
