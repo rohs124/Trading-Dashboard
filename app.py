@@ -59,25 +59,36 @@ def get_forex_yf(from_cur, to_cur):
 # --- Interest Rate Differential ---
 @st.cache_data(ttl=3600)
 def get_bond_yield(currency):
-    tickers = {"USD": "^TNX", "CAD": "^CCB10Y", "EUR": "^DE10Y", "GBP": "^GUKG10"}
-    if currency not in tickers: return None
-    hist = yf.Ticker(tickers[currency]).history(period="5d")
-    return hist['Close'].dropna().iloc[-1] / (10 if currency == "USD" else 1)
+    tickers = {"USD": "^TNX", "CAD": "^CA10YT=RR", "EUR": "^DE10Y", "GBP": "^GUKG10"}
+    ticker = tickers.get(currency)
+    if not ticker:
+        return None
+    try:
+        hist = yf.Ticker(ticker).history(period="5d")
+        close_prices = hist['Close'].dropna()
+        if close_prices.empty:
+            return None
+        latest = close_prices.iloc[-1]
+        return latest / (10 if currency == "USD" else 1)
+    except:
+        return None
 
 def calc_ird(from_c, to_c):
     y1 = get_bond_yield(from_c)
     y2 = get_bond_yield(to_c)
-    return round(y1 - y2, 2) if y1 and y2 else None
+    if y1 is not None and y2 is not None:
+        return round(y1 - y2, 2)
+    return None
 
 # --- Sidebar ---
 st.sidebar.header("⚙️ Settings")
 chart_type = st.sidebar.radio("Chart Type", ["Candlestick", "Line"], index=1)
-with st.sidebar.expander("📊 Stock Metrics"):
+with st.sidebar.expander("📊 Stock Chart Metrics"):
     show_ma = st.checkbox("Show 20/50-Day MA", True)
     show_bollinger = st.checkbox("Show Bollinger Bands", True)
     show_volume = st.checkbox("Show Volume", False)
 
-# --- TSX ETF Chart ---
+# --- TSX Chart ---
 st.header("TSX Composite Proxy ETF (XIC.TO)")
 tsx_data = get_stock_data_alpha("XIC.TO")
 if tsx_data is not None:
@@ -90,6 +101,7 @@ if tsx_data is not None:
         fig.add_trace(go.Scatter(x=tsx_data.index, y=tsx_data['UpperBand'], name="Upper Band"))
         fig.add_trace(go.Scatter(x=tsx_data.index, y=tsx_data['LowerBand'], name="Lower Band"))
     st.plotly_chart(fig, use_container_width=True)
+
 # --- Forex Section ---
 st.header("💱 Forex Tracker")
 col1, col2 = st.columns(2)
