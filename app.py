@@ -6,7 +6,7 @@ import plotly.express as px
 from alpha_vantage.timeseries import TimeSeries
 from datetime import datetime, timedelta
 
-# --- Page config ---
+# --- Page Config ---
 st.set_page_config(page_title="Canadian Market & Forex Dashboard", layout="wide")
 st.title("📈 Canadian Market & Forex Dashboard")
 
@@ -15,7 +15,7 @@ ALPHA_API_KEY = st.secrets["alpha_vantage"]["api_key"]
 EXCHANGE_API_KEY = st.secrets["exchange_rate_api"]["api_key"]
 ts = TimeSeries(key=ALPHA_API_KEY, output_format='pandas')
 
-# --- Functions ---
+# --- Caching & Data Functions ---
 @st.cache_data(ttl=3600)
 def get_stock_data_alpha(ticker):
     try:
@@ -52,8 +52,7 @@ def get_exchange_rate(from_currency, to_currency):
         data = response.json()
         if data["result"] == "success":
             return data["conversion_rate"]
-        else:
-            return None
+        return None
     except:
         return None
 
@@ -71,13 +70,14 @@ def get_forex_history(from_currency, to_currency):
             df = df.sort_index()
             df.columns = [f"{from_currency}/{to_currency}"]
             return df
-        else:
-            return None
+        return None
     except:
         return None
 
+# --- Chart Renderer ---
 def plot_chart(df, title, chart_type, show_ma, show_bollinger, show_volume, key_prefix):
     fig = go.Figure()
+
     if chart_type == 'Candlestick':
         fig.add_trace(go.Candlestick(
             x=df.index, open=df['Open'], high=df['High'],
@@ -108,7 +108,7 @@ show_ma = st.sidebar.checkbox("Show 20/50-Day MA", True)
 show_bollinger = st.sidebar.checkbox("Show Bollinger Bands", True)
 show_volume = st.sidebar.checkbox("Show Volume", False)
 
-# --- TSX Composite ---
+# --- TSX ETF Chart ---
 st.header("TSX Composite Proxy ETF (XIC.TO)")
 tsx_data = get_stock_data_alpha("XIC.TO")
 if tsx_data is not None:
@@ -116,7 +116,6 @@ if tsx_data is not None:
 
 # --- Forex Section ---
 st.header("💱 Forex Tracker")
-
 st.subheader("USD/CAD Live Rate")
 usd_cad = get_exchange_rate("USD", "CAD")
 if usd_cad:
@@ -142,7 +141,6 @@ if forex_df is not None:
 
 # --- Portfolio Section ---
 st.header("💼 Portfolio Metrics")
-
 portfolio_input = st.text_input("Enter tickers with weights (e.g., SHOP.TO,10 ENB.TO,5 BNS.TO,20)")
 portfolio = {}
 if portfolio_input:
@@ -183,7 +181,7 @@ if portfolio:
             rsi_fig.add_trace(go.Scatter(x=data.index, y=data["RSI"], name=f"{ticker} RSI", line=dict(color=color, dash='dot')))
 
         if "Volume" in selected_metrics:
-            volume_fig.add_trace(go.Scatter(x=data.index, y=data["Volume"], name=f"{ticker} Volume", line=dict(color=color, dash='dash')))
+            volume_fig.add_trace(go.Scatter(x=data.index, y=data["Volume"], name=f"{ticker} Volume", line=dict(color=color)))
 
     if any(metric in selected_metrics for metric in ["Close Price", "MA50", "UpperBand"]):
         st.subheader("📊 Portfolio Price Metrics")
