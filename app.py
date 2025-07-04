@@ -5,6 +5,7 @@ import plotly.graph_objs as go
 import plotly.express as px
 from alpha_vantage.timeseries import TimeSeries
 from datetime import datetime, timedelta
+import yfinance as yf
 
 # --- Page Config ---
 st.set_page_config(page_title="Canadian Market & Forex Dashboard", layout="wide")
@@ -60,25 +61,18 @@ def get_exchange_rate(from_currency, to_currency):
         return None
 
 @st.cache_data(ttl=3600)
-def get_forex_history(from_currency, to_currency):
+def get_forex_history_yf(from_currency, to_currency):
+    ticker = f"{from_currency}{to_currency}=X"
     try:
-        end = datetime.utcnow()
-        start = end - timedelta(days=90)
-        url = f"https://api.exchangerate.host/timeseries?start_date={start.date()}&end_date={end.date()}&base={from_currency}&symbols={to_currency}"
-        response = requests.get(url)
-        data = response.json()
-        if data.get("rates"):
-            df = pd.DataFrame(data["rates"]).T
-            df.index = pd.to_datetime(df.index)
-            df = df.sort_index()
-            # rename column to show pair clearly
-            df.columns = [f"{from_currency}/{to_currency}"]
-            return df
-        else:
-            st.warning(f"No historical data found for {from_currency}/{to_currency}")
+        data = yf.download(ticker, period="90d", interval="1d", progress=False)
+        if data.empty:
             return None
+        df = data[['Close']].rename(columns={'Close': f"{from_currency}/{to_currency}"})
+        df.index = pd.to_datetime(df.index)
+        df = df.sort_index()
+        return df
     except Exception as e:
-        st.warning(f"Error fetching forex history: {e}")
+        st.warning(f"Error fetching forex history from yfinance: {e}")
         return None
 
 # --- Chart Renderer ---
@@ -110,10 +104,16 @@ def plot_chart(df, title, chart_type, show_ma, show_bollinger, show_volume, key_
 # --- Sidebar ---
 st.sidebar.header("⚙️ Settings")
 chart_type = st.sidebar.radio("Chart Type", ["Candlestick", "Line"], index=1)
-st.sidebar.markdown("📊 **Metrics**")
-show_ma = st.sidebar.checkbox("Show 20/50-Day MA", True)
-show_bollinger = st.sidebar.checkbox("Show Bollinger Bands", True)
-show_volume = st.sidebar.checkbox("Show Volume", False)
+
+selected_metrics = st.sidebar.multiselect(
+    "Select portfolio metrics to display",
+    options=["Close Price", "MA50", "UpperBand", "RSI", "Volume"],
+    default=["Close Price", "RSI", "Volume"]
+)
+
+show_ma = "MA50" in selected_metrics
+show_bollinger = "UpperBand" in selected_metrics
+show_volume = "Volume" in selected_metrics
 
 # --- TSX ETF Chart ---
 st.header("TSX Composite Proxy ETF (XIC.TO)")
@@ -147,7 +147,7 @@ else:
         st.warning(f"Unable to fetch live rate for {fx_from} to {fx_to}.")
 
     st.subheader("📉 Forex History (Last 90 Days)")
-    forex_df = get_forex_history(fx_from, fx_to)
+    forex_df = get_forex_history_yf(fx_from, fx_to)
     if forex_df is not None and not forex_df.empty:
         fig_fx = go.Figure()
         fig_fx.add_trace(go.Scatter(
@@ -177,12 +177,6 @@ if portfolio_input:
             portfolio[ticker.strip().upper()] = float(weight)
     except:
         st.error("Invalid format. Use: TICKER,WEIGHT")
-
-selected_metrics = st.multiselect(
-    "Select portfolio metrics to display:",
-    ["Close Price", "MA50", "UpperBand", "RSI", "Volume"],
-    default=["Close Price", "RSI", "Volume"]
-)
 
 if portfolio:
     price_fig = go.Figure()
