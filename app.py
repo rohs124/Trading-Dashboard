@@ -5,6 +5,8 @@ import plotly.graph_objs as go
 import plotly.express as px
 from alpha_vantage.timeseries import TimeSeries
 from datetime import datetime, timedelta
+import yfinance as yf
+from textblob import TextBlob
 
 # --- Page Config ---
 st.set_page_config(page_title="Canadian Market & Forex Dashboard", layout="wide")
@@ -80,6 +82,32 @@ def get_forex_history(from_currency, to_currency):
         st.warning(f"Error fetching forex history: {e}")
         return None
 
+# News Sentiment (using TextBlob)
+@st.cache_data(ttl=1800)
+def get_news_sentiment(ticker):
+    # Simple placeholder fetching news headlines from Yahoo Finance via yfinance
+    try:
+        news = yf.Ticker(ticker).news
+        if not news:
+            return []
+        # Analyze sentiment for top 5 headlines
+        top5 = news[:5]
+        results = []
+        for item in top5:
+            headline = item['title']
+            polarity = TextBlob(headline).sentiment.polarity
+            if polarity > 0.1:
+                sentiment = "Positive"
+            elif polarity < -0.1:
+                sentiment = "Negative"
+            else:
+                sentiment = "Neutral"
+            results.append((headline, sentiment))
+        return results
+    except Exception as e:
+        st.warning(f"Error fetching news sentiment for {ticker}: {e}")
+        return []
+
 # --- Chart Renderer ---
 def plot_chart(df, title, chart_type, show_ma, show_bollinger, show_volume, key_prefix):
     fig = go.Figure()
@@ -108,11 +136,26 @@ def plot_chart(df, title, chart_type, show_ma, show_bollinger, show_volume, key_
 
 # --- Sidebar ---
 st.sidebar.header("⚙️ Settings")
+
 chart_type = st.sidebar.radio("Chart Type", ["Candlestick", "Line"], index=1)
-st.sidebar.markdown("📊 **Metrics**")
-show_ma = st.sidebar.checkbox("Show 20/50-Day MA", True)
-show_bollinger = st.sidebar.checkbox("Show Bollinger Bands", True)
-show_volume = st.sidebar.checkbox("Show Volume", False)
+
+# Metrics for stock charts
+stock_metrics = st.sidebar.multiselect(
+    "📊 Metrics (Stock Charts)",
+    ["Show 20/50-Day MA", "Show Bollinger Bands", "Show Volume"],
+    default=["Show 20/50-Day MA", "Show Bollinger Bands"]
+)
+
+# Portfolio metrics
+portfolio_metrics = st.sidebar.multiselect(
+    "Select portfolio metrics to display:",
+    ["Close Price", "MA50", "UpperBand", "RSI", "Volume"],
+    default=["Close Price", "RSI", "Volume"]
+)
+
+show_ma = "Show 20/50-Day MA" in stock_metrics
+show_bollinger = "Show Bollinger Bands" in stock_metrics
+show_volume = "Show Volume" in stock_metrics
 
 # --- TSX ETF Chart ---
 st.header("TSX Composite Proxy ETF (XIC.TO)")
@@ -177,12 +220,6 @@ if portfolio_input:
     except:
         st.error("Invalid format. Use: TICKER,WEIGHT")
 
-selected_metrics = st.multiselect(
-    "Select portfolio metrics to display:",
-    ["Close Price", "MA50", "UpperBand", "RSI", "Volume"],
-    default=["Close Price", "RSI", "Volume"]
-)
-
 if portfolio:
     price_fig = go.Figure()
     rsi_fig = go.Figure()
@@ -194,37 +231,38 @@ if portfolio:
             continue
         color = px.colors.qualitative.Plotly[idx % 10]
 
-        if "Close Price" in selected_metrics:
+        if "Close Price" in portfolio_metrics:
             price_fig.add_trace(go.Scatter(x=data.index, y=data["Close"] * weight, name=f"{ticker} Close", line=dict(color=color)))
 
-        if "MA50" in selected_metrics:
+        if "MA50" in portfolio_metrics:
             price_fig.add_trace(go.Scatter(x=data.index, y=data["MA50"] * weight, name=f"{ticker} MA50", line=dict(color=color, dash='dot')))
 
-        if "UpperBand" in selected_metrics:
+        if "UpperBand" in portfolio_metrics:
             price_fig.add_trace(go.Scatter(x=data.index, y=data["UpperBand"] * weight, name=f"{ticker} UpperBand", line=dict(color=color, dash='dash')))
 
-        if "RSI" in selected_metrics:
+        if "RSI" in portfolio_metrics:
             rsi_fig.add_trace(go.Scatter(x=data.index, y=data["RSI"], name=f"{ticker} RSI", line=dict(color=color, dash='dot')))
 
-        if "Volume" in selected_metrics:
+        if "Volume" in portfolio_metrics:
             volume_fig.add_trace(go.Scatter(x=data.index, y=data["Volume"], name=f"{ticker} Volume", line=dict(color=color)))
 
-    if any(metric in selected_metrics for metric in ["Close Price", "MA50", "UpperBand"]):
+    if any(m in portfolio_metrics for m in ["Close Price", "MA50", "UpperBand"]):
         st.subheader("📊 Portfolio Price Metrics")
         price_fig.update_layout(title="Portfolio Price", height=400, xaxis_title="Date", yaxis_title="Price")
         st.plotly_chart(price_fig, use_container_width=True)
 
-    if "RSI" in selected_metrics:
+    if "RSI" in portfolio_metrics:
         st.subheader("📉 RSI")
         rsi_fig.update_layout(title="Portfolio RSI", height=300, xaxis_title="Date", yaxis_title="RSI")
         st.plotly_chart(rsi_fig, use_container_width=True)
 
-    if "Volume" in selected_metrics:
+    if "Volume" in portfolio_metrics:
         st.subheader("📈 Volume")
         volume_fig.update_layout(title="Portfolio Volume", height=300, xaxis_title="Date", yaxis_title="Volume")
         st.plotly_chart(volume_fig, use_container_width=True)
 
-    if "RSI" in selected_metrics:
+    # AI RSI-Based Suggestions
+    if "RSI" in portfolio_metrics:
         st.subheader("🧠 AI RSI-Based Suggestions")
         for ticker in portfolio:
             data = get_stock_data_alpha(ticker)
@@ -236,3 +274,19 @@ if portfolio:
                     st.warning(f"{ticker} is **overbought** (RSI={latest_rsi:.2f}) → Consider Reducing")
                 else:
                     st.success(f"{ticker} RSI is neutral ({latest_rsi:.2f})")
+
+# --- 🧠 Ticker News Sentiment Section ---
+st.header("🧠 Ticker News Sentiment")
+news_ticker = st.text_input("Enter a ticker to fetch latest news (e.g., AAPL)").strip().upper()
+if news_ticker:
+    news_items = get_news_sentiment(news_ticker)
+    if news_items:
+        for headline, sentiment in news_items:
+            if sentiment == "Positive":
+                st.success(f"👍 {headline}")
+            elif sentiment == "Negative":
+                st.error(f"👎 {headline}")
+            else:
+                st.info(f"ℹ️ {headline}")
+    else:
+        st.warning(f"No news found or unable to fetch news for {news_ticker}.")
