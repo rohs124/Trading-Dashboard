@@ -29,10 +29,13 @@ def get_stock_data_alpha(ticker):
             '5. volume': 'Volume'
         })
         df = df.sort_index()
+
+        # Existing indicators
         df['MA20'] = df['Close'].rolling(window=20).mean()
         df['MA50'] = df['Close'].rolling(window=50).mean()
         df['UpperBand'] = df['MA20'] + 2 * df['Close'].rolling(window=20).std()
         df['LowerBand'] = df['MA20'] - 2 * df['Close'].rolling(window=20).std()
+
         delta = df['Close'].diff()
         gain = delta.clip(lower=0)
         loss = -delta.clip(upper=0)
@@ -40,6 +43,43 @@ def get_stock_data_alpha(ticker):
         avg_loss = loss.rolling(window=14).mean()
         rs = avg_gain / avg_loss
         df['RSI'] = 100 - (100 / (1 + rs))
+
+        # --- New Indicators ---
+
+        # EMA 12 and 26
+        df['EMA12'] = df['Close'].ewm(span=12, adjust=False).mean()
+        df['EMA26'] = df['Close'].ewm(span=26, adjust=False).mean()
+
+        # MACD and Signal line
+        df['MACD'] = df['EMA12'] - df['EMA26']
+        df['MACD_Signal'] = df['MACD'].ewm(span=9, adjust=False).mean()
+
+        # ATR (Average True Range)
+        high_low = df['High'] - df['Low']
+        high_close_prev = (df['High'] - df['Close'].shift()).abs()
+        low_close_prev = (df['Low'] - df['Close'].shift()).abs()
+        true_range = pd.concat([high_low, high_close_prev, low_close_prev], axis=1).max(axis=1)
+        df['ATR'] = true_range.rolling(window=14).mean()
+
+        # ADX (Average Directional Index)
+        # Calculate Directional Movement
+        plus_dm = df['High'].diff()
+        minus_dm = df['Low'].diff().abs()
+        plus_dm = plus_dm.where((plus_dm > minus_dm) & (plus_dm > 0), 0.0)
+        minus_dm = minus_dm.where((minus_dm > plus_dm) & (minus_dm > 0), 0.0)
+
+        tr14 = df['ATR']  # already 14-day ATR computed above
+        plus_di = 100 * (plus_dm.rolling(window=14).sum() / tr14)
+        minus_di = 100 * (minus_dm.rolling(window=14).sum() / tr14)
+        dx = 100 * (plus_di - minus_di).abs() / (plus_di + minus_di)
+        df['ADX'] = dx.rolling(window=14).mean()
+
+        # Stochastic Oscillator (14,3)
+        low14 = df['Low'].rolling(window=14).min()
+        high14 = df['High'].rolling(window=14).max()
+        df['%K'] = 100 * ((df['Close'] - low14) / (high14 - low14))
+        df['%D'] = df['%K'].rolling(window=3).mean()
+
         return df.dropna()
     except Exception as e:
         st.error(f"Error loading {ticker}: {e}")
@@ -103,17 +143,34 @@ def plot_chart(df, title, chart_type, show_ma, show_bollinger, show_volume, key_
 
 # --- Sidebar ---
 st.sidebar.header("⚙️ Settings")
+
 chart_type = st.sidebar.radio("Chart Type", ["Candlestick", "Line"], index=1)
 
+# Portfolio Metrics multiselect
 selected_metrics = st.sidebar.multiselect(
     "Select portfolio metrics to display",
-    options=["Close Price", "MA50", "UpperBand", "RSI", "Volume"],
+    options=[
+        "Close Price", "MA20", "MA50", "UpperBand", "LowerBand",
+        "RSI", "EMA12", "EMA26", "MACD", "MACD_Signal",
+        "ADX", "%K (Stochastic)", "%D (Stochastic)", "ATR", "Volume"
+    ],
     default=["Close Price", "RSI", "Volume"]
 )
 
-show_ma = "MA50" in selected_metrics
-show_bollinger = "UpperBand" in selected_metrics
+show_ma = any(m in selected_metrics for m in ["MA20", "MA50", "EMA12", "EMA26"])
+show_bollinger = any(m in selected_metrics for m in ["UpperBand", "LowerBand"])
 show_volume = "Volume" in selected_metrics
+
+# Forex Metrics multiselect (separate)
+st.sidebar.markdown("---")
+st.sidebar.header("📉 Forex Metrics")
+forex_metrics = st.sidebar.multiselect(
+    "Select Forex chart metrics to display",
+    options=[
+        "Exchange Rate", "MA20", "Volatility (Std Dev)"
+    ],
+    default=["Exchange Rate"]
+)
 
 # --- TSX ETF Chart ---
 st.header("TSX Composite Proxy ETF (XIC.TO)")
@@ -150,84 +207,36 @@ else:
     forex_df = get_forex_history_yf(fx_from, fx_to)
     if forex_df is not None and not forex_df.empty:
         fig_fx = go.Figure()
-        fig_fx.add_trace(go.Scatter(
-            x=forex_df.index,
-            y=forex_df.iloc[:, 0],
-            mode='lines',
-            name=f"{fx_from}/{fx_to}"
-        ))
+
+        if "Exchange Rate" in forex_metrics:
+            fig_fx.add_trace(go.Scatter(
+                x=forex_df.index,
+                y=forex_df.iloc[:, 0],
+                mode='lines',
+                name=f"{fx_from}/{fx_to} Rate"
+            ))
+
+        if "MA20" in forex_metrics:
+            ma20 = forex_df.iloc[:, 0].rolling(window=20).mean()
+            fig_fx.add_trace(go.Scatter(
+                x=forex_df.index,
+                y=ma20,
+                mode='lines',
+                name="MA20",
+                line=dict(dash='dot')
+            ))
+
+        if "Volatility (Std Dev)" in forex_metrics:
+            volatility = forex_df.iloc[:, 0].rolling(window=20).std()
+            fig_fx.add_trace(go.Scatter(
+                x=forex_df.index,
+                y=volatility,
+                mode='lines',
+                name="Volatility (Std Dev)",
+                line=dict(dash='dash')
+            ))
+
         fig_fx.update_layout(
             title=f"{fx_from} to {fx_to} Exchange Rate (Last 90 Days)",
             height=400,
             xaxis_title="Date",
-            yaxis_title="Exchange Rate"
-        )
-        st.plotly_chart(fig_fx, use_container_width=True)
-    else:
-        st.warning(f"No historical forex data available for {fx_from}/{fx_to}.")
-
-# --- Portfolio Section ---
-st.header("💼 Portfolio Metrics")
-portfolio_input = st.text_input("Enter tickers with weights (e.g., SHOP.TO,10 ENB.TO,5 BNS.TO,20)")
-portfolio = {}
-if portfolio_input:
-    try:
-        for item in portfolio_input.split():
-            ticker, weight = item.split(',')
-            portfolio[ticker.strip().upper()] = float(weight)
-    except:
-        st.error("Invalid format. Use: TICKER,WEIGHT")
-
-if portfolio:
-    price_fig = go.Figure()
-    rsi_fig = go.Figure()
-    volume_fig = go.Figure()
-
-    for idx, (ticker, weight) in enumerate(portfolio.items()):
-        data = get_stock_data_alpha(ticker)
-        if data is None:
-            continue
-        color = px.colors.qualitative.Plotly[idx % 10]
-
-        if "Close Price" in selected_metrics:
-            price_fig.add_trace(go.Scatter(x=data.index, y=data["Close"] * weight, name=f"{ticker} Close", line=dict(color=color)))
-
-        if "MA50" in selected_metrics:
-            price_fig.add_trace(go.Scatter(x=data.index, y=data["MA50"] * weight, name=f"{ticker} MA50", line=dict(color=color, dash='dot')))
-
-        if "UpperBand" in selected_metrics:
-            price_fig.add_trace(go.Scatter(x=data.index, y=data["UpperBand"] * weight, name=f"{ticker} UpperBand", line=dict(color=color, dash='dash')))
-
-        if "RSI" in selected_metrics:
-            rsi_fig.add_trace(go.Scatter(x=data.index, y=data["RSI"], name=f"{ticker} RSI", line=dict(color=color, dash='dot')))
-
-        if "Volume" in selected_metrics:
-            volume_fig.add_trace(go.Scatter(x=data.index, y=data["Volume"], name=f"{ticker} Volume", line=dict(color=color)))
-
-    if any(metric in selected_metrics for metric in ["Close Price", "MA50", "UpperBand"]):
-        st.subheader("📊 Portfolio Price Metrics")
-        price_fig.update_layout(title="Portfolio Price", height=400, xaxis_title="Date", yaxis_title="Price")
-        st.plotly_chart(price_fig, use_container_width=True)
-
-    if "RSI" in selected_metrics:
-        st.subheader("📉 RSI")
-        rsi_fig.update_layout(title="Portfolio RSI", height=300, xaxis_title="Date", yaxis_title="RSI")
-        st.plotly_chart(rsi_fig, use_container_width=True)
-
-    if "Volume" in selected_metrics:
-        st.subheader("📈 Volume")
-        volume_fig.update_layout(title="Portfolio Volume", height=300, xaxis_title="Date", yaxis_title="Volume")
-        st.plotly_chart(volume_fig, use_container_width=True)
-
-    if "RSI" in selected_metrics:
-        st.subheader("🧠 AI RSI-Based Suggestions")
-        for ticker in portfolio:
-            data = get_stock_data_alpha(ticker)
-            if data is not None and "RSI" in data.columns:
-                latest_rsi = data["RSI"].iloc[-1]
-                if latest_rsi < 30:
-                    st.info(f"{ticker} is **oversold** (RSI={latest_rsi:.2f}) → Potential Buy")
-                elif latest_rsi > 70:
-                    st.warning(f"{ticker} is **overbought** (RSI={latest_rsi:.2f}) → Consider Reducing")
-                else:
-                    st.success(f"{ticker} RSI is neutral ({latest_rsi:.2f})")
