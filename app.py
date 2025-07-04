@@ -52,14 +52,17 @@ def get_exchange_rate(from_currency, to_currency):
         data = response.json()
         if data["result"] == "success":
             return data["conversion_rate"]
-        return None
-    except:
+        else:
+            st.warning(f"Failed to get live rate for {from_currency}/{to_currency}: {data.get('error-type', 'Unknown error')}")
+            return None
+    except Exception as e:
+        st.warning(f"Error fetching live exchange rate: {e}")
         return None
 
 @st.cache_data(ttl=3600)
 def get_forex_history(from_currency, to_currency):
     try:
-        end = datetime.now()
+        end = datetime.utcnow()
         start = end - timedelta(days=90)
         url = f"https://api.exchangerate.host/timeseries?start_date={start.date()}&end_date={end.date()}&base={from_currency}&symbols={to_currency}"
         response = requests.get(url)
@@ -68,10 +71,14 @@ def get_forex_history(from_currency, to_currency):
             df = pd.DataFrame(data["rates"]).T
             df.index = pd.to_datetime(df.index)
             df = df.sort_index()
+            # rename column to show pair clearly
             df.columns = [f"{from_currency}/{to_currency}"]
             return df
-        return None
-    except:
+        else:
+            st.warning(f"No historical data found for {from_currency}/{to_currency}")
+            return None
+    except Exception as e:
+        st.warning(f"Error fetching forex history: {e}")
         return None
 
 # --- Chart Renderer ---
@@ -116,28 +123,48 @@ if tsx_data is not None:
 
 # --- Forex Section ---
 st.header("💱 Forex Tracker")
+
 st.subheader("USD/CAD Live Rate")
 usd_cad = get_exchange_rate("USD", "CAD")
 if usd_cad:
     st.metric(label="USD to CAD", value=f"{usd_cad:.4f}")
+else:
+    st.warning("Unable to fetch USD to CAD live rate.")
 
 col1, col2 = st.columns(2)
 with col1:
-    fx_from = st.text_input("From Currency (e.g., EUR)", value="EUR")
+    fx_from = st.text_input("From Currency (e.g., EUR)", value="EUR").strip().upper()
 with col2:
-    fx_to = st.text_input("To Currency (e.g., USD)", value="USD")
+    fx_to = st.text_input("To Currency (e.g., USD)", value="USD").strip().upper()
 
-rate = get_exchange_rate(fx_from.upper(), fx_to.upper())
-if rate:
-    st.metric(label=f"{fx_from.upper()} to {fx_to.upper()}", value=f"{rate:.4f}")
+if len(fx_from) != 3 or len(fx_to) != 3:
+    st.error("Please enter valid 3-letter currency codes for 'From' and 'To' fields.")
+else:
+    rate = get_exchange_rate(fx_from, fx_to)
+    if rate:
+        st.metric(label=f"{fx_from} to {fx_to}", value=f"{rate:.4f}")
+    else:
+        st.warning(f"Unable to fetch live rate for {fx_from} to {fx_to}.")
 
-st.subheader("📉 Forex History (Last 90 Days)")
-forex_df = get_forex_history(fx_from.upper(), fx_to.upper())
-if forex_df is not None:
-    fig_fx = go.Figure()
-    fig_fx.add_trace(go.Scatter(x=forex_df.index, y=forex_df.iloc[:, 0], mode='lines', name=f"{fx_from}/{fx_to}"))
-    fig_fx.update_layout(title=f"{fx_from.upper()} to {fx_to.upper()} Exchange Rate", height=400, xaxis_title="Date", yaxis_title="Rate")
-    st.plotly_chart(fig_fx, use_container_width=True)
+    st.subheader("📉 Forex History (Last 90 Days)")
+    forex_df = get_forex_history(fx_from, fx_to)
+    if forex_df is not None and not forex_df.empty:
+        fig_fx = go.Figure()
+        fig_fx.add_trace(go.Scatter(
+            x=forex_df.index,
+            y=forex_df.iloc[:, 0],
+            mode='lines',
+            name=f"{fx_from}/{fx_to}"
+        ))
+        fig_fx.update_layout(
+            title=f"{fx_from} to {fx_to} Exchange Rate (Last 90 Days)",
+            height=400,
+            xaxis_title="Date",
+            yaxis_title="Exchange Rate"
+        )
+        st.plotly_chart(fig_fx, use_container_width=True)
+    else:
+        st.warning(f"No historical forex data available for {fx_from}/{fx_to}.")
 
 # --- Portfolio Section ---
 st.header("💼 Portfolio Metrics")
