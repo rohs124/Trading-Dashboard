@@ -4,9 +4,9 @@ import requests
 import plotly.graph_objs as go
 import plotly.express as px
 import yfinance as yf
+from textblob import TextBlob
 from alpha_vantage.timeseries import TimeSeries
 from datetime import datetime, timedelta
-from textblob import TextBlob  # For sentiment analysis
 
 # --- Page Config ---
 st.set_page_config(page_title="Canadian Market & Forex Dashboard", layout="wide")
@@ -15,7 +15,6 @@ st.title("📈 Canadian Market & Forex Dashboard")
 # --- API Keys ---
 ALPHA_API_KEY = st.secrets["alpha_vantage"]["api_key"]
 EXCHANGE_API_KEY = st.secrets["exchange_rate_api"]["api_key"]
-NEWS_API_KEY = st.secrets.get("news_api", {}).get("api_key", None)  # Optional: News API key if using an API
 ts = TimeSeries(key=ALPHA_API_KEY, output_format='pandas')
 
 # --- Caching & Data Functions ---
@@ -83,36 +82,6 @@ def get_forex_history(from_currency, to_currency):
         st.warning(f"Error fetching forex history: {e}")
         return None
 
-# --- News Fetching & Sentiment ---
-@st.cache_data(ttl=1800)
-def fetch_news(ticker, max_articles=5):
-    """
-    Fetch news headlines for a ticker and perform sentiment analysis.
-    Uses Yahoo Finance news scraping via yfinance or fallback to News API if available.
-    """
-    try:
-        # Using yfinance news scraping (limited but works well)
-        stock = yf.Ticker(ticker)
-        news = stock.news[:max_articles]
-        results = []
-        for article in news:
-            title = article.get('title', 'No Title')
-            summary = article.get('summary', '')  # Sometimes summary available
-            combined_text = f"{title} {summary}"
-            # Sentiment Analysis using TextBlob
-            polarity = TextBlob(combined_text).sentiment.polarity
-            if polarity > 0.1:
-                sentiment = "Positive"
-            elif polarity < -0.1:
-                sentiment = "Negative"
-            else:
-                sentiment = "Neutral"
-            results.append({"title": title, "sentiment": sentiment})
-        return results
-    except Exception as e:
-        st.warning(f"Could not fetch news for {ticker}: {e}")
-        return []
-
 # --- Chart Renderer ---
 def plot_chart(df, title, chart_type, show_ma, show_bollinger, show_volume, key_prefix):
     fig = go.Figure()
@@ -143,36 +112,30 @@ def plot_chart(df, title, chart_type, show_ma, show_bollinger, show_volume, key_
 st.sidebar.header("⚙️ Settings")
 chart_type = st.sidebar.radio("Chart Type", ["Candlestick", "Line"], index=1)
 
-# Portfolio metrics dropdown to select multiple
-portfolio_metrics = st.sidebar.multiselect(
-    "Portfolio Metrics to display:",
-    options=["Close Price", "MA50", "UpperBand", "RSI", "Volume", "Cumulative Return"],
-    default=["Close Price", "RSI", "Volume"]
-)
+# Separate metrics for stock charts
+st.sidebar.markdown("📊 **Stock Chart Metrics**")
+show_ma = st.sidebar.checkbox("Show 20/50-Day MA", True)
+show_bollinger = st.sidebar.checkbox("Show Bollinger Bands", True)
+show_volume = st.sidebar.checkbox("Show Volume", False)
 
-# Forex metrics dropdown
-forex_metrics = st.sidebar.multiselect(
-    "Forex Metrics to display:",
-    options=["Live Rate", "Historical Rate Chart"],
-    default=["Live Rate", "Historical Rate Chart"]
-)
+# Separate metrics for forex chart
+st.sidebar.markdown("📈 **Forex Chart Metrics**")
+show_forex_ma = st.sidebar.checkbox("Show Forex 7/21-Day MA", True)
 
 # --- TSX ETF Chart ---
 st.header("TSX Composite Proxy ETF (XIC.TO)")
 tsx_data = get_stock_data_alpha("XIC.TO")
 if tsx_data is not None:
-    plot_chart(tsx_data, "TSX Composite ETF (XIC.TO)", chart_type, True, True, False, "tsx")
+    plot_chart(tsx_data, "TSX Composite ETF (XIC.TO)", chart_type, show_ma, show_bollinger, show_volume, "tsx")
 
 # --- Forex Section ---
 st.header("💱 Forex Tracker")
-
-if "Live Rate" in forex_metrics:
-    st.subheader("USD/CAD Live Rate")
-    usd_cad = get_exchange_rate("USD", "CAD")
-    if usd_cad:
-        st.metric(label="USD to CAD", value=f"{usd_cad:.4f}")
-    else:
-        st.warning("Unable to fetch USD to CAD live rate.")
+st.subheader("USD/CAD Live Rate")
+usd_cad = get_exchange_rate("USD", "CAD")
+if usd_cad:
+    st.metric(label="USD to CAD", value=f"{usd_cad:.4f}")
+else:
+    st.warning("Unable to fetch USD to CAD live rate.")
 
 col1, col2 = st.columns(2)
 with col1:
@@ -189,44 +152,70 @@ else:
     else:
         st.warning(f"Unable to fetch live rate for {fx_from} to {fx_to}.")
 
-    if "Historical Rate Chart" in forex_metrics:
-        st.subheader("📉 Forex History (Last 90 Days)")
-        forex_df = get_forex_history(fx_from, fx_to)
-        if forex_df is not None and not forex_df.empty:
-            fig_fx = go.Figure()
-            fig_fx.add_trace(go.Scatter(
-                x=forex_df.index,
-                y=forex_df.iloc[:, 0],
-                mode='lines',
-                name=f"{fx_from}/{fx_to}"
-            ))
-            fig_fx.update_layout(
-                title=f"{fx_from} to {fx_to} Exchange Rate (Last 90 Days)",
-                height=400,
-                xaxis_title="Date",
-                yaxis_title="Exchange Rate"
-            )
-            st.plotly_chart(fig_fx, use_container_width=True)
-        else:
-            st.warning(f"No historical forex data available for {fx_from}/{fx_to}.")
+    st.subheader("📉 Forex History (Last 90 Days)")
+    forex_df = get_forex_history(fx_from, fx_to)
+    if forex_df is not None and not forex_df.empty:
+        fig_fx = go.Figure()
+        fig_fx.add_trace(go.Scatter(
+            x=forex_df.index,
+            y=forex_df.iloc[:, 0],
+            mode='lines',
+            name=f"{fx_from}/{fx_to}"
+        ))
+        if show_forex_ma:
+            forex_df['MA7'] = forex_df.iloc[:, 0].rolling(window=7).mean()
+            forex_df['MA21'] = forex_df.iloc[:, 0].rolling(window=21).mean()
+            fig_fx.add_trace(go.Scatter(x=forex_df.index, y=forex_df['MA7'], name='MA7', line=dict(color='blue', dash='dot')))
+            fig_fx.add_trace(go.Scatter(x=forex_df.index, y=forex_df['MA21'], name='MA21', line=dict(color='green', dash='dot')))
 
-# --- New: Ticker News Sentiment Section ---
-st.header("🧠 Ticker News Sentiment")
-ticker_news = st.text_input("Enter ticker for news sentiment (e.g., AAPL)").strip().upper()
-
-if ticker_news:
-    news_items = fetch_news(ticker_news)
-    if news_items:
-        st.subheader(f"Top 5 news for {ticker_news} with Sentiment Tags")
-        for i, item in enumerate(news_items, 1):
-            sentiment_color = {
-                "Positive": "green",
-                "Neutral": "gray",
-                "Negative": "red"
-            }.get(item["sentiment"], "black")
-            st.markdown(f"{i}. {item['title']}  \n**Sentiment:** <span style='color:{sentiment_color}'>{item['sentiment']}</span>", unsafe_allow_html=True)
+        fig_fx.update_layout(
+            title=f"{fx_from} to {fx_to} Exchange Rate (Last 90 Days)",
+            height=400,
+            xaxis_title="Date",
+            yaxis_title="Exchange Rate"
+        )
+        st.plotly_chart(fig_fx, use_container_width=True)
     else:
-        st.info(f"No recent news found for {ticker_news}.")
+        st.warning(f"No historical forex data available for {fx_from}/{fx_to}.")
+
+# --- 🧠 Ticker News Sentiment Section ---
+st.header("🧠 Ticker News Sentiment")
+ticker_news_input = st.text_input("Enter ticker for news sentiment (e.g., AAPL)", value="AAPL").strip().upper()
+
+def fetch_yahoo_news(ticker):
+    try:
+        yf_ticker = yf.Ticker(ticker)
+        news_items = yf_ticker.news
+        if not news_items:
+            return []
+        news_list = []
+        for item in news_items[:5]:  # Top 5 news
+            headline = item.get('title', '')
+            if headline:
+                polarity = TextBlob(headline).sentiment.polarity
+                if polarity > 0.1:
+                    sentiment = "Positive"
+                elif polarity < -0.1:
+                    sentiment = "Negative"
+                else:
+                    sentiment = "Neutral"
+                news_list.append((headline, sentiment))
+        return news_list
+    except Exception as e:
+        st.warning(f"Failed to fetch news for {ticker}: {e}")
+        return []
+
+news_data = fetch_yahoo_news(ticker_news_input)
+if news_data:
+    for headline, sentiment in news_data:
+        if sentiment == "Positive":
+            st.success(f"✅ {headline}  — *{sentiment}*")
+        elif sentiment == "Negative":
+            st.error(f"❌ {headline}  — *{sentiment}*")
+        else:
+            st.info(f"ℹ️ {headline}  — *{sentiment}*")
+else:
+    st.info("No news data available.")
 
 # --- Portfolio Section ---
 st.header("💼 Portfolio Metrics")
@@ -240,11 +229,19 @@ if portfolio_input:
     except:
         st.error("Invalid format. Use: TICKER,WEIGHT")
 
+selected_metrics = st.multiselect(
+    "Select portfolio metrics to display:",
+    ["Close Price", "MA50", "UpperBand", "RSI", "Volume"],
+    default=["Close Price", "RSI", "Volume"]
+)
+
 if portfolio:
     price_fig = go.Figure()
     rsi_fig = go.Figure()
     volume_fig = go.Figure()
-    cumret_fig = go.Figure()
+
+    # For cumulative return calculation
+    cum_returns = pd.DataFrame()
 
     for idx, (ticker, weight) in enumerate(portfolio.items()):
         data = get_stock_data_alpha(ticker)
@@ -252,47 +249,50 @@ if portfolio:
             continue
         color = px.colors.qualitative.Plotly[idx % 10]
 
-        if "Close Price" in portfolio_metrics:
+        if "Close Price" in selected_metrics:
             price_fig.add_trace(go.Scatter(x=data.index, y=data["Close"] * weight, name=f"{ticker} Close", line=dict(color=color)))
 
-        if "MA50" in portfolio_metrics:
+        if "MA50" in selected_metrics:
             price_fig.add_trace(go.Scatter(x=data.index, y=data["MA50"] * weight, name=f"{ticker} MA50", line=dict(color=color, dash='dot')))
 
-        if "UpperBand" in portfolio_metrics:
+        if "UpperBand" in selected_metrics:
             price_fig.add_trace(go.Scatter(x=data.index, y=data["UpperBand"] * weight, name=f"{ticker} UpperBand", line=dict(color=color, dash='dash')))
 
-        if "RSI" in portfolio_metrics:
+        if "RSI" in selected_metrics:
             rsi_fig.add_trace(go.Scatter(x=data.index, y=data["RSI"], name=f"{ticker} RSI", line=dict(color=color, dash='dot')))
 
-        if "Volume" in portfolio_metrics:
+        if "Volume" in selected_metrics:
             volume_fig.add_trace(go.Scatter(x=data.index, y=data["Volume"], name=f"{ticker} Volume", line=dict(color=color)))
 
-        if "Cumulative Return" in portfolio_metrics:
-            # Calculate cumulative return = (Close / first Close) -1 weighted by portfolio weight
-            cum_return = (data["Close"] / data["Close"].iloc[0] - 1) * weight
-            cumret_fig.add_trace(go.Scatter(x=data.index, y=cum_return, name=f"{ticker} Cumulative Return", line=dict(color=color)))
+        # Prepare cumulative returns: normalize Close prices and weight them
+        norm_close = data["Close"] / data["Close"].iloc[0]
+        cum_returns[ticker] = norm_close * weight
 
-    if any(m in portfolio_metrics for m in ["Close Price", "MA50", "UpperBand"]):
+    if any(metric in selected_metrics for metric in ["Close Price", "MA50", "UpperBand"]):
         st.subheader("📊 Portfolio Price Metrics")
         price_fig.update_layout(title="Portfolio Price", height=400, xaxis_title="Date", yaxis_title="Price")
         st.plotly_chart(price_fig, use_container_width=True)
 
-    if "RSI" in portfolio_metrics:
+    if "RSI" in selected_metrics:
         st.subheader("📉 RSI")
         rsi_fig.update_layout(title="Portfolio RSI", height=300, xaxis_title="Date", yaxis_title="RSI")
         st.plotly_chart(rsi_fig, use_container_width=True)
 
-    if "Volume" in portfolio_metrics:
+    if "Volume" in selected_metrics:
         st.subheader("📈 Volume")
         volume_fig.update_layout(title="Portfolio Volume", height=300, xaxis_title="Date", yaxis_title="Volume")
         st.plotly_chart(volume_fig, use_container_width=True)
 
-    if "Cumulative Return" in portfolio_metrics:
+    # --- Portfolio Cumulative Return Chart ---
+    if not cum_returns.empty:
+        cum_returns['Total'] = cum_returns.sum(axis=1)
         st.subheader("📈 Portfolio Cumulative Return")
-        cumret_fig.update_layout(title="Portfolio Cumulative Return", height=300, xaxis_title="Date", yaxis_title="Cumulative Return")
-        st.plotly_chart(cumret_fig, use_container_width=True)
+        fig_cumret = go.Figure()
+        fig_cumret.add_trace(go.Scatter(x=cum_returns.index, y=cum_returns['Total'], mode='lines', name='Cumulative Return'))
+        fig_cumret.update_layout(title="Portfolio Cumulative Return (Weighted)", height=400, xaxis_title="Date", yaxis_title="Cumulative Return")
+        st.plotly_chart(fig_cumret, use_container_width=True)
 
-    if "RSI" in portfolio_metrics:
+    if "RSI" in selected_metrics:
         st.subheader("🧠 AI RSI-Based Suggestions")
         for ticker in portfolio:
             data = get_stock_data_alpha(ticker)
