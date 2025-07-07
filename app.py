@@ -4,6 +4,7 @@ import requests
 import plotly.graph_objs as go
 import plotly.express as px
 from alpha_vantage.timeseries import TimeSeries
+from alpha_vantage.foreignexchange import ForeignExchange
 from datetime import datetime, timedelta
 import yfinance as yf
 from textblob import TextBlob
@@ -15,11 +16,10 @@ st.title("📈 Canadian Market & Forex Dashboard")
 # --- API Keys ---
 ALPHA_API_KEY = st.secrets["alpha_vantage"]["api_key"]
 EXCHANGE_API_KEY = st.secrets["exchange_rate_api"]["api_key"]
-NEWSAPI_KEY = st.secrets["news_api"]["api_key"]  # Add your NewsAPI key here in secrets
 ts = TimeSeries(key=ALPHA_API_KEY, output_format='pandas')
+fx = ForeignExchange(key=ALPHA_API_KEY, output_format='pandas')  # FX client
 
 # --- Caching & Data Functions ---
-
 @st.cache_data(ttl=3600)
 def get_stock_data_alpha(ticker):
     try:
@@ -64,57 +64,62 @@ def get_exchange_rate(from_currency, to_currency):
         return None
 
 @st.cache_data(ttl=3600)
-def get_forex_history_alpha(from_currency, to_currency):
+def get_forex_history(from_currency, to_currency):
     try:
-        fx_ts = TimeSeries(key=ALPHA_API_KEY, output_format='pandas')
-        df, _ = fx_ts.get_fx_daily(from_symbol=from_currency, to_symbol=to_currency, outputsize='compact')
-        df = df.rename(columns={
+        # Using Alpha Vantage FX daily endpoint instead of exchangerate.host for more consistency
+        data, meta_data = fx.get_currency_exchange_daily(from_symbol=from_currency, to_symbol=to_currency, outputsize='compact')
+        data = data.rename(columns={
             '1. open': 'Open',
             '2. high': 'High',
             '3. low': 'Low',
             '4. close': 'Close'
         })
-        df.index = pd.to_datetime(df.index)
-        df = df.sort_index()
-        return df
+        data = data.sort_index()
+        return data
     except Exception as e:
         st.warning(f"Alpha Vantage FX history error: {e}")
-        return None
+        # fallback to exchangerate.host if you want to keep it:
+        try:
+            end = datetime.utcnow()
+            start = end - timedelta(days=90)
+            url = f"https://api.exchangerate.host/timeseries?start_date={start.date()}&end_date={end.date()}&base={from_currency}&symbols={to_currency}"
+            response = requests.get(url)
+            data = response.json()
+            if data.get("rates"):
+                df = pd.DataFrame(data["rates"]).T
+                df.index = pd.to_datetime(df.index)
+                df = df.sort_index()
+                df.columns = [f"{from_currency}/{to_currency}"]
+                return df
+            else:
+                st.warning(f"No historical data found for {from_currency}/{to_currency}")
+                return None
+        except Exception as e2:
+            st.warning(f"Fallback forex history error: {e2}")
+            return None
 
-# News Sentiment using NewsAPI + TextBlob
+# News Sentiment (using TextBlob)
 @st.cache_data(ttl=1800)
-def get_news_sentiment(keyword):
+def get_news_sentiment(ticker):
     try:
-        url = (
-            f"https://newsapi.org/v2/everything?"
-            f"q={keyword}&"
-            f"language=en&"
-            f"sortBy=publishedAt&"
-            f"pageSize=5&"
-            f"apiKey={NEWSAPI_KEY}"
-        )
-        response = requests.get(url)
-        data = response.json()
-        if data.get("status") != "ok" or not data.get("articles"):
+        news = yf.Ticker(ticker).news
+        if not news:
             return []
-
-        articles = data["articles"]
+        top5 = news[:5]
         results = []
-        for article in articles:
-            title = article.get("title")
-            if not title:
-                continue
-            polarity = TextBlob(title).sentiment.polarity
+        for item in top5:
+            headline = item['title']
+            polarity = TextBlob(headline).sentiment.polarity
             if polarity > 0.1:
                 sentiment = "Positive"
             elif polarity < -0.1:
                 sentiment = "Negative"
             else:
                 sentiment = "Neutral"
-            results.append((title, sentiment))
+            results.append((headline, sentiment))
         return results
     except Exception as e:
-        st.warning(f"Error fetching sentiment: {e}")
+        st.warning(f"Error fetching news sentiment for {ticker}: {e}")
         return []
 
 # --- Chart Renderer ---
@@ -196,12 +201,17 @@ else:
         st.warning(f"Unable to fetch live rate for {fx_from} to {fx_to}.")
 
     st.subheader("📉 Forex History (Last 90 Days)")
-    forex_df = get_forex_history_alpha(fx_from, fx_to)
+    forex_df = get_forex_history(fx_from, fx_to)
     if forex_df is not None and not forex_df.empty:
         fig_fx = go.Figure()
+        # For Alpha Vantage FX daily data, 'Close' column is available
+        if 'Close' in forex_df.columns:
+            ydata = forex_df['Close']
+        else:
+            ydata = forex_df.iloc[:, 0]
         fig_fx.add_trace(go.Scatter(
             x=forex_df.index,
-            y=forex_df['Close'],
+            y=ydata,
             mode='lines',
             name=f"{fx_from}/{fx_to}"
         ))
@@ -214,22 +224,6 @@ else:
         st.plotly_chart(fig_fx, use_container_width=True)
     else:
         st.warning(f"No historical forex data available for {fx_from}/{fx_to}.")
-
-# --- News Sentiment Section (Placed just below Forex) ---
-st.header("🧠 News Sentiment Analysis")
-news_keyword = st.text_input("Enter keyword or company name for sentiment (e.g., Apple)").strip()
-if news_keyword:
-    news_items = get_news_sentiment(news_keyword)
-    if news_items:
-        for headline, sentiment in news_items:
-            if sentiment == "Positive":
-                st.success(f"👍 {headline}")
-            elif sentiment == "Negative":
-                st.error(f"👎 {headline}")
-            else:
-                st.info(f"ℹ️ {headline}")
-    else:
-        st.warning(f"No recent news found for {news_keyword}.")
 
 # --- Portfolio Section ---
 st.header("💼 Portfolio Metrics")
@@ -297,3 +291,19 @@ if portfolio:
                     st.warning(f"{ticker} is **overbought** (RSI={latest_rsi:.2f}) → Consider Reducing")
                 else:
                     st.success(f"{ticker} RSI is neutral ({latest_rsi:.2f})")
+
+# --- 🧠 Ticker News Sentiment Section ---
+st.header("🧠 Ticker News Sentiment")
+news_ticker = st.text_input("Enter a ticker to fetch latest news (e.g., AAPL)").strip().upper()
+if news_ticker:
+    news_items = get_news_sentiment(news_ticker)
+    if news_items:
+        for headline, sentiment in news_items:
+            if sentiment == "Positive":
+                st.success(f"👍 {headline}")
+            elif sentiment == "Negative":
+                st.error(f"👎 {headline}")
+            else:
+                st.info(f"ℹ️ {headline}")
+    else:
+        st.warning(f"No news found or unable to fetch news for {news_ticker}.")
