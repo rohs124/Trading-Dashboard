@@ -70,5 +70,5 @@ Use the sidebar to access:
 ---
 
 Still stuck or want to contribute?  
-📬 Reach out: **your.email@example.com**
+📬 Reach out: **rohan.singh150596@gmail.com**
 """)
